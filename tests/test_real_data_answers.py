@@ -111,15 +111,21 @@ def test_findings_state_both_bounds_and_say_which_is_which(
 def test_findings_check_the_correction_under_arbitrary_dependence(
     real_outputs: Artifacts,
 ) -> None:
-    """Closure makes the five frequencies negatively correlated, so
+    """Closure forces each frequency's covariances with the other four to sum to
+    minus its own variance, so the five cannot all be positively related and
     Benjamini-Hochberg's dependence condition is not established here.
+
+    It does not force every pair negative, which is a distinct and false claim,
+    so both halves are pinned: an earlier draft of this document asserted each
+    of them in turn.
 
     All five baseline p-values sit far from alpha, so Benjamini-Yekutieli
     saturates at 1.000; the smallest anywhere in the document is 0.165, at
     t = 14. Neither correction reaches alpha, which is the point.
     """
     text = real_outputs.findings.read_text(encoding="utf-8")
-    assert "negatively correlated" in text
+    assert "cannot all be positively related" in text
+    assert "does not make every pair negatively correlated" in text
     assert "Benjamini-Yekutieli" in text
     assert "moves from 0.885 to 1.000" in text
     assert "0.165, at t = 14" in text
