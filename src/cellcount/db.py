@@ -67,6 +67,24 @@ CREATE INDEX IF NOT EXISTS idx_samples_filters
     ON samples(sample_type, time_from_treatment_start);
 CREATE INDEX IF NOT EXISTS idx_cell_counts_population
     ON cell_counts(population_id);
+
+-- Part 2's relative frequencies. A view rather than a materialized table, so
+-- the arithmetic is defined once and cannot drift from the counts it derives
+-- from. Part 3 then genuinely reads "the data reported in the summary table".
+CREATE VIEW IF NOT EXISTS sample_frequencies AS
+SELECT
+    counts.sample_id,
+    totals.total_count,
+    populations.name                                AS population,
+    counts.count,
+    100.0 * counts.count / totals.total_count       AS percentage
+FROM cell_counts AS counts
+JOIN populations USING (population_id)
+JOIN (
+    SELECT sample_id, SUM(count) AS total_count
+    FROM cell_counts
+    GROUP BY sample_id
+) AS totals USING (sample_id);
 """
 
 
