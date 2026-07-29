@@ -13,12 +13,19 @@ which is what lets tests hand it synthetic inputs instead.
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
-from cellcount.db import connect, create_schema
-from cellcount.loader import load_csv
-
 ROOT = Path(__file__).resolve().parent
+
+# The spec requires `python load_data.py` to work as a standalone invocation.
+# Adding src/ to the path means it does so even before `make setup` performs the
+# editable install, and is a no-op once the package is importable.
+sys.path.insert(0, str(ROOT / "src"))
+
+from cellcount.db import connect, create_schema  # noqa: E402
+from cellcount.loader import load_csv  # noqa: E402
+
 CSV_PATH = ROOT / "cell-count.csv"
 DB_PATH = ROOT / "cell-count.db"
 

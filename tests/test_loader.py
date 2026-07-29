@@ -180,6 +180,73 @@ def test_raises_on_negative_count(db: sqlite3.Connection, tmp_path: Path) -> Non
         load_csv(db, path)
 
 
+def test_raises_on_a_double_signed_count(
+    db: sqlite3.Connection, tmp_path: Path
+) -> None:
+    """'--5'.lstrip('-') is '5', which isdigit() accepts. int() then fails."""
+    path = _write_csv(tmp_path, [_row(counts=("--5", "20", "30", "40", "50"))])
+    with pytest.raises(DataValidationError):
+        load_csv(db, path)
+
+
+def test_raises_on_a_unicode_digit_count(
+    db: sqlite3.Connection, tmp_path: Path
+) -> None:
+    """'²'.isdigit() is True but int('²') raises."""
+    path = _write_csv(tmp_path, [_row(counts=("²", "20", "30", "40", "50"))])
+    with pytest.raises(DataValidationError):
+        load_csv(db, path)
+
+
+def test_raises_on_non_integer_age(db: sqlite3.Connection, tmp_path: Path) -> None:
+    path = _write_csv(tmp_path, [_row(age="fifty")])
+    with pytest.raises(DataValidationError, match="age"):
+        load_csv(db, path)
+
+
+def test_raises_on_non_integer_timepoint(
+    db: sqlite3.Connection, tmp_path: Path
+) -> None:
+    path = _write_csv(tmp_path, [_row(time="baseline")])
+    with pytest.raises(DataValidationError, match="time_from_treatment_start"):
+        load_csv(db, path)
+
+
+def test_raises_on_duplicate_sample_id(db: sqlite3.Connection, tmp_path: Path) -> None:
+    """A named error beats an IntegrityError surfacing from mid-transaction."""
+    path = _write_csv(
+        tmp_path,
+        [_row(sample="s1"), _row(subject="sbj2", sample="s1", time="7")],
+    )
+    with pytest.raises(DataValidationError, match="s1"):
+        load_csv(db, path)
+
+
+def test_raises_on_a_sample_with_no_cells(
+    db: sqlite3.Connection, tmp_path: Path
+) -> None:
+    """Zero cells across every population is a failed acquisition, not data.
+
+    It also makes the relative frequency undefined, so it cannot be loaded.
+    """
+    path = _write_csv(tmp_path, [_row(counts=("0", "0", "0", "0", "0"))])
+    with pytest.raises(DataValidationError, match="zero"):
+        load_csv(db, path)
+
+
+def test_nothing_is_written_when_validation_fails(
+    db: sqlite3.Connection, tmp_path: Path
+) -> None:
+    """Validation runs before the transaction, so a bad file leaves no partial load."""
+    path = _write_csv(
+        tmp_path,
+        [_row(sample="good"), _row(subject="sbj2", sample="bad", age="fifty")],
+    )
+    with pytest.raises(DataValidationError):
+        load_csv(db, path)
+    assert _scalar(db, "SELECT COUNT(*) FROM samples") == 0
+
+
 def test_raises_on_missing_column(db: sqlite3.Connection, tmp_path: Path) -> None:
     path = tmp_path / "bad.csv"
     with path.open("w", newline="") as handle:

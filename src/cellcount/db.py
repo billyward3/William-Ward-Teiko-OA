@@ -77,7 +77,13 @@ SELECT
     totals.total_count,
     populations.name                                AS population,
     counts.count,
-    100.0 * counts.count / totals.total_count       AS percentage
+    -- SQLite returns NULL for division by zero, which would break the declared
+    -- float type of SummaryRow. The loader rejects all-zero samples, so this
+    -- guard only matters for a database populated by some other route.
+    CASE WHEN totals.total_count > 0
+         THEN 100.0 * counts.count / totals.total_count
+         ELSE 0.0
+    END                                             AS percentage
 FROM cell_counts AS counts
 JOIN populations USING (population_id)
 JOIN (

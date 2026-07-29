@@ -22,7 +22,10 @@ from cellcount.loader import POPULATIONS
 REPO_ROOT = Path(__file__).parent.parent
 
 # A hand-built dataset small enough to reason about entirely.
-# Every sample totals 200 cells, so each percentage is just count / 2.
+#
+# Sample totals deliberately differ. If they were all equal, a view that divided
+# every count by some other sample's total, or by a global constant, would still
+# pass every percentage assertion.
 _SUBJECTS = [
     # subject_id, project, condition, age, sex, treatment, response
     ("sbj1", "prj1", "melanoma", 50, "M", "miraclib", "yes"),
@@ -39,12 +42,20 @@ _SAMPLES = [
 ]
 
 _COUNTS = {
-    # sample_id: counts in POPULATIONS order, each row summing to 200
-    "s1": (10, 20, 30, 40, 100),
-    "s2": (20, 20, 20, 20, 120),
-    "s3": (50, 50, 50, 25, 25),
-    "s4": (40, 40, 40, 40, 40),
+    # sample_id: counts in POPULATIONS order
+    "s1": (10, 20, 30, 40, 100),  # total 200, percentages land exactly
+    "s2": (20, 20, 20, 20, 220),  # total 300, percentages repeat in binary
+    "s3": (50, 50, 50, 25, 25),  # total 200
+    "s4": (100, 100, 100, 100, 100),  # total 500
 }
+
+_SAMPLE_TOTALS = {sample: sum(counts) for sample, counts in _COUNTS.items()}
+
+
+@pytest.fixture
+def sample_totals() -> dict[str, int]:
+    """Expected total_count per sample in `seeded_db`, derived from the counts."""
+    return dict(_SAMPLE_TOTALS)
 
 
 @pytest.fixture

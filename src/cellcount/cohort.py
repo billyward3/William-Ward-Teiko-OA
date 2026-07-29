@@ -16,7 +16,7 @@ from dataclasses import dataclass
 # Cohort field -> the qualified column it filters on. Order fixes the order of
 # conditions in the emitted SQL, so the same cohort always produces the same
 # statement text and SQLite can reuse the prepared statement.
-_SCALAR_COLUMNS: dict[str, str] = {
+FILTER_COLUMNS: dict[str, str] = {
     "condition": "subjects.condition",
     "treatment": "subjects.treatment",
     "response": "subjects.response",
@@ -59,7 +59,7 @@ def where_clause(cohort: Cohort) -> tuple[str, list[object]]:
     conditions: list[str] = []
     params: list[object] = []
 
-    for field, column in _SCALAR_COLUMNS.items():
+    for field, column in FILTER_COLUMNS.items():
         value = getattr(cohort, field)
         if value is not None:
             conditions.append(f"{column} = ?")

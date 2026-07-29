@@ -11,7 +11,11 @@ from __future__ import annotations
 
 import sqlite3
 
+import pytest
+
 from cellcount.cohort import Cohort
+from cellcount.db import create_schema
+from cellcount.loader import POPULATIONS
 from cellcount.summary import summary_rows
 
 SPEC_COLUMNS = ["sample", "total_count", "population", "count", "percentage"]
@@ -29,21 +33,23 @@ def test_row_fields_match_the_spec_columns(seeded_db: sqlite3.Connection) -> Non
     assert list(vars(row)) == SPEC_COLUMNS
 
 
-def test_total_count_is_the_sum_across_populations(
-    seeded_db: sqlite3.Connection,
+def test_total_count_is_that_samples_own_sum(
+    seeded_db: sqlite3.Connection, sample_totals: dict[str, int]
 ) -> None:
+    """Each sample must be divided by its own total, not a shared constant."""
     for row in summary_rows(seeded_db):
-        assert row.total_count == 200
+        assert row.total_count == sample_totals[row.sample]
 
 
 def test_percentages_sum_to_100_for_every_sample(
     seeded_db: sqlite3.Connection,
 ) -> None:
+    """Approximate, because a total of 300 gives percentages that repeat in binary."""
     totals: dict[str, float] = {}
     for row in summary_rows(seeded_db):
         totals[row.sample] = totals.get(row.sample, 0.0) + row.percentage
     for sample, total in totals.items():
-        assert total == 100.0, f"{sample} sums to {total}"
+        assert total == pytest.approx(100.0), f"{sample} sums to {total}"
 
 
 def test_percentage_is_count_over_total(seeded_db: sqlite3.Connection) -> None:
@@ -85,6 +91,45 @@ def test_cohort_fields_combine(seeded_db: sqlite3.Connection) -> None:
 
 def test_cohort_matching_nothing_returns_empty(seeded_db: sqlite3.Connection) -> None:
     assert summary_rows(seeded_db, Cohort(condition="nonexistent")) == []
+
+
+def test_zero_total_sample_yields_a_number_not_null(
+    conn: sqlite3.Connection,
+) -> None:
+    """A sample with no cells at all must not produce NULL percentages.
+
+    SQLite returns NULL for division by zero. That would violate SummaryRow's
+    declared float type and break `statistics.median` downstream, and mypy
+    cannot catch it because sqlite3 hands back Any.
+    """
+    create_schema(conn)
+    with conn:
+        conn.executemany(
+            "INSERT INTO populations (population_id, name) VALUES (?, ?)",
+            list(enumerate(POPULATIONS, start=1)),
+        )
+        conn.execute("INSERT INTO projects (project_id) VALUES ('prj1')")
+        conn.execute(
+            "INSERT INTO subjects "
+            "(subject_id, project_id, condition, age, sex, treatment, response) "
+            "VALUES ('sbjZ', 'prj1', 'melanoma', 50, 'M', 'miraclib', 'yes')"
+        )
+        conn.execute(
+            "INSERT INTO samples (sample_id, subject_id, sample_type, "
+            "time_from_treatment_start) VALUES ('sZ', 'sbjZ', 'PBMC', 0)"
+        )
+        conn.executemany(
+            "INSERT INTO cell_counts (sample_id, population_id, count) "
+            "VALUES (?, ?, ?)",
+            [("sZ", i + 1, 0) for i in range(len(POPULATIONS))],
+        )
+
+    rows = summary_rows(conn)
+    assert len(rows) == len(POPULATIONS)
+    for row in rows:
+        assert row.percentage is not None
+        assert isinstance(row.percentage, float)
+        assert row.percentage == 0.0
 
 
 def test_rows_are_ordered_deterministically(seeded_db: sqlite3.Connection) -> None:

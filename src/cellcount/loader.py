@@ -54,7 +54,9 @@ class LoadSummary:
 
 
 def _read_rows(csv_path: Path) -> list[dict[str, str]]:
-    with csv_path.open(newline="") as handle:
+    # utf-8-sig so a byte-order mark does not turn the first header into
+    # '﻿project' and surface as a confusing missing-column error.
+    with csv_path.open(newline="", encoding="utf-8-sig") as handle:
         reader = csv.DictReader(handle)
         missing = [c for c in REQUIRED_COLUMNS if c not in (reader.fieldnames or [])]
         if missing:
@@ -62,18 +64,60 @@ def _read_rows(csv_path: Path) -> list[dict[str, str]]:
         return list(reader)
 
 
+def _parse_int(raw: str, *, field: str, sample: str) -> int:
+    """Parse an integer, naming the offending field if it is not one.
+
+    `str.isdigit` is not a substitute: it accepts superscripts like '²', and
+    stripping a leading '-' first lets '--5' through. Both then fail inside
+    int() mid-write, which is exactly what validating up front is meant to
+    prevent.
+    """
+    try:
+        return int(raw)
+    except ValueError:
+        raise DataValidationError(
+            f"sample {sample}: {field} is not an integer: {raw!r}"
+        ) from None
+
+
+def _validate_unique_samples(rows: list[dict[str, str]]) -> None:
+    seen: set[str] = set()
+    for row in rows:
+        sample = row["sample"]
+        if sample in seen:
+            raise DataValidationError(f"duplicate sample id: {sample!r}")
+        seen.add(sample)
+
+
 def _validate_counts(rows: list[dict[str, str]]) -> None:
     for row in rows:
+        sample = row["sample"]
+        total = 0
         for population in POPULATIONS:
-            raw = row[population]
-            if not raw.lstrip("-").isdigit():
+            value = _parse_int(row[population], field=population, sample=sample)
+            if value < 0:
                 raise DataValidationError(
-                    f"sample {row['sample']}: {population} is not an integer: {raw!r}"
+                    f"sample {sample}: {population} is negative: {value}"
                 )
-            if int(raw) < 0:
-                raise DataValidationError(
-                    f"sample {row['sample']}: {population} is negative: {raw!r}"
-                )
+            total += value
+        if total == 0:
+            raise DataValidationError(
+                f"sample {sample}: every population is zero, so relative "
+                f"frequency is undefined"
+            )
+
+
+def _validate_numeric_metadata(rows: list[dict[str, str]]) -> None:
+    """Age and timepoint are written as integers, so they are checked as integers."""
+    for row in rows:
+        sample = row["sample"]
+        if row["age"]:
+            _parse_int(row["age"], field="age", sample=sample)
+        _parse_int(
+            row["time_from_treatment_start"],
+            field="time_from_treatment_start",
+            sample=sample,
+        )
 
 
 def _validate_subject_attributes(rows: list[dict[str, str]]) -> None:
@@ -99,7 +143,9 @@ def _clear(conn: sqlite3.Connection) -> None:
 def load_csv(conn: sqlite3.Connection, csv_path: Path) -> LoadSummary:
     """Replace the contents of the database with the rows in `csv_path`."""
     rows = _read_rows(csv_path)
+    _validate_unique_samples(rows)
     _validate_counts(rows)
+    _validate_numeric_metadata(rows)
     _validate_subject_attributes(rows)
 
     population_ids = {name: index for index, name in enumerate(POPULATIONS, start=1)}

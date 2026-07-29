@@ -30,6 +30,8 @@ packages = ["src/cellcount"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q --strict-markers"
+# So the suite runs from a fresh clone, before `make setup` installs the package.
+pythonpath = ["src"]
 
 [tool.ruff]
 line-length = 88
