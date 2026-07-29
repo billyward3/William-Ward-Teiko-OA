@@ -21,6 +21,8 @@ import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
+from cellcount.db import connect, create_schema
+
 POPULATIONS = ("b_cell", "cd8_t_cell", "cd4_t_cell", "nk_cell", "monocyte")
 
 REQUIRED_COLUMNS = (
@@ -229,3 +231,22 @@ def load_csv(conn: sqlite3.Connection, csv_path: Path) -> LoadSummary:
         samples=len(rows),
         cell_counts=len(rows) * len(POPULATIONS),
     )
+
+
+def build_database(csv_path: Path, db_path: Path) -> LoadSummary:
+    """Create `db_path` from scratch and load `csv_path` into it.
+
+    The file is deleted rather than reloaded in place, so the schema always
+    matches the code that is running and no table left over from an earlier
+    shape can survive a re-run.
+
+    Both `load_data.py` and the pipeline call this, which is the point: the
+    two entry points must not be able to build different databases.
+    """
+    db_path.unlink(missing_ok=True)
+    conn = connect(db_path)
+    try:
+        create_schema(conn)
+        return load_csv(conn, csv_path)
+    finally:
+        conn.close()

@@ -1,0 +1,8 @@
+breakdown,category,unit,count
+project,prj1,samples,384
+project,prj2,samples,0
+project,prj3,samples,272
+response,no,subjects,325
+response,yes,subjects,331
+sex,F,subjects,312
+sex,M,subjects,344

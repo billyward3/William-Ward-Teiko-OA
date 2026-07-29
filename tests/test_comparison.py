@@ -23,8 +23,10 @@ from cellcount.comparison import (
     ComparisonError,
     NotTwoGroups,
     UnknownSplitColumn,
-    _shift_and_interval,
+    _shift_and_intervals,
     compare,
+    simultaneous_alpha,
+    yekutieli_q_values,
 )
 from cellcount.db import connect, create_schema
 from cellcount.loader import POPULATIONS
@@ -617,7 +619,7 @@ def test_interval_endpoints_match_a_hand_computed_reference() -> None:
     left = [0.0, 100.0, 200.0, 300.0, 400.0, 500.0]
     right = [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]
 
-    shift, (low, high) = _shift_and_interval(left, right, 0.05)
+    shift, [(low, high)] = _shift_and_intervals(left, right, (0.05,))
 
     assert shift == pytest.approx(246.5)
     assert (low, high) == (93.0, 400.0)
@@ -629,20 +631,126 @@ def test_shift_is_the_median_of_differences_not_a_difference_of_medians() -> Non
     median(left) - median(right) = 1 - 9 = -8, while the median of the nine
     pairwise differences is 0.
     """
-    shift, _ = _shift_and_interval([0, 1, 10], [0, 9, 10], 0.05)
+    shift, _ = _shift_and_intervals([0, 1, 10], [0, 9, 10], (0.05,))
     assert shift == pytest.approx(0.0)
 
 
 def test_the_interval_is_never_inverted_at_a_loose_alpha() -> None:
     """A clamp that permitted k = total/2 crossed the endpoints over."""
     for alpha in (0.5, 0.8, 0.9, 0.99):
-        _, (low, high) = _shift_and_interval([0, 10, 20, 30], [1, 3, 7, 100], alpha)
+        _, [(low, high)] = _shift_and_intervals(
+            [0, 10, 20, 30], [1, 3, 7, 100], (alpha,)
+        )
         assert low <= high, f"inverted at alpha={alpha}"
 
 
 def test_alpha_is_reported_on_the_result(no_difference: sqlite3.Connection) -> None:
     """Otherwise a reader cannot tell what confidence level the intervals used."""
     assert compare(no_difference, Cohort(), alpha=0.10).alpha == 0.10
+
+
+# --- the simultaneous interval ----------------------------------------------
+
+
+def test_the_simultaneous_interval_contains_the_marginal_one(
+    no_difference: sqlite3.Connection,
+) -> None:
+    """It is the same interval taken at a stricter level, so it can only widen."""
+    result = compare(no_difference, Cohort())
+    assert result.n_tested > 1
+    for population in result.populations:
+        assert population.shift_ci is not None
+        assert population.simultaneous_ci is not None
+        low, high = population.shift_ci
+        joint_low, joint_high = population.simultaneous_ci
+        assert joint_low <= low
+        assert joint_high >= high
+        assert (joint_high - joint_low) > (high - low)
+
+
+def test_the_simultaneous_interval_is_taken_at_alpha_over_the_family_size(
+    conn: sqlite3.Connection,
+) -> None:
+    """Pins the divisor, which is the size of the correction's family.
+
+    Three populations here are entirely tied, so they never enter the
+    correction and `n_tested` is 2 against five rows. A cohort where all five
+    are testable cannot tell the two divisors apart, and dividing by the row
+    count satisfies the containment test above.
+    """
+    create_schema(conn)
+    tied = [(10 + i, 20, 30, 40, 100 - i) for i in range(6)]
+    shifted = [(40 + i, 20, 30, 40, 70 - i) for i in range(6)]
+    _seed_groups(conn, {"yes": tied, "no": shifted})
+
+    result = compare(conn, Cohort())
+    assert result.n_tested < len(result.populations)
+
+    correct = compare(conn, Cohort(), alpha=result.alpha / result.n_tested)
+    by_row_count = compare(conn, Cohort(), alpha=result.alpha / len(result.populations))
+    expected = {p.population: p.shift_ci for p in correct.populations}
+    wrong = {p.population: p.shift_ci for p in by_row_count.populations}
+    assert expected != wrong, "fixture cannot distinguish the two divisors"
+
+    for population in result.populations:
+        assert population.simultaneous_ci == expected[population.population]
+
+
+def test_simultaneous_alpha_divides_by_the_family_size() -> None:
+    assert simultaneous_alpha(0.05, 5) == pytest.approx(0.01)
+    assert simultaneous_alpha(0.05, 1) == pytest.approx(0.05)
+    # Nothing tested: no family to correct over, and no interval to attach it to.
+    assert simultaneous_alpha(0.05, 0) == pytest.approx(0.05)
+
+
+def test_the_simultaneous_interval_is_withheld_with_the_marginal_one(
+    conn: sqlite3.Connection,
+) -> None:
+    create_schema(conn)
+    _seed_groups(conn, {"yes": _BASELINE[:2], "no": _BASELINE[:2]})
+    for population in compare(conn, Cohort()).populations:
+        assert population.shift_ci is None
+        assert population.simultaneous_ci is None
+
+
+# --- the Benjamini-Yekutieli sensitivity check ------------------------------
+
+
+def test_yekutieli_is_never_more_permissive_than_hochberg(
+    planted_difference: sqlite3.Connection,
+) -> None:
+    """BY pays sum(1/i) for holding under arbitrary dependence."""
+    result = compare(planted_difference, Cohort())
+    adjusted = yekutieli_q_values(result)
+    assert adjusted
+    for population in result.populations:
+        if population.q_value is not None:
+            assert adjusted[population.population] >= population.q_value
+
+
+def test_yekutieli_covers_exactly_the_populations_hochberg_did(
+    conn: sqlite3.Connection,
+) -> None:
+    """An untested population is out of both families, not entered at p = 1."""
+    create_schema(conn)
+    tied = [(10 + i, 20, 30, 40, 100 - i) for i in range(6)]
+    shifted = [(40 + i, 20, 30, 40, 70 - i) for i in range(6)]
+    _seed_groups(conn, {"yes": tied, "no": shifted})
+
+    result = compare(conn, Cohort())
+    adjusted = yekutieli_q_values(result)
+    assert len(adjusted) == result.n_tested
+    assert set(adjusted) == {
+        p.population for p in result.populations if p.q_value is not None
+    }
+
+
+def test_yekutieli_of_an_untested_comparison_is_empty(
+    conn: sqlite3.Connection,
+) -> None:
+    create_schema(conn)
+    _seed_groups(conn, {"yes": _BASELINE[:2], "no": _BASELINE[:2]})
+    assert yekutieli_q_values(compare(conn, Cohort())) == {}
 
 
 def test_rejects_an_alpha_outside_the_unit_interval(

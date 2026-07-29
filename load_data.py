@@ -23,24 +23,14 @@ ROOT = Path(__file__).resolve().parent
 # editable install, and is a no-op once the package is importable.
 sys.path.insert(0, str(ROOT / "src"))
 
-from cellcount.db import connect, create_schema  # noqa: E402
-from cellcount.loader import load_csv  # noqa: E402
+from cellcount.loader import build_database  # noqa: E402
 
 CSV_PATH = ROOT / "cell-count.csv"
 DB_PATH = ROOT / "cell-count.db"
 
 
 def main() -> None:
-    # Rebuild from scratch so the schema always matches the current code, and
-    # so re-running the pipeline is deterministic.
-    DB_PATH.unlink(missing_ok=True)
-
-    conn = connect(DB_PATH)
-    try:
-        create_schema(conn)
-        summary = load_csv(conn, CSV_PATH)
-    finally:
-        conn.close()
+    summary = build_database(CSV_PATH, DB_PATH)
 
     print(f"Loaded {CSV_PATH.name} -> {DB_PATH.name}")
     print(f"  projects     {summary.projects:>7,}")

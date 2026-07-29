@@ -6,10 +6,14 @@ setup:
 	python -m pip install --upgrade pip
 	python -m pip install -e ".[dev]"
 
-# The whole pipeline, start to finish, with no manual intervention.
-# Grows as later parts land; today it initializes the database and loads it.
+# The whole pipeline, start to finish, with no manual intervention: creates the
+# database, loads cell-count.csv (Part 1), then writes every table, the figure
+# and the write-up for Parts 2 to 4 into outputs/.
+#
+# The load step is the same code `python load_data.py` runs standalone, so the
+# two entry points cannot build different databases.
 pipeline:
-	python load_data.py
+	python -m cellcount.pipeline
 
 dashboard:
 	@echo "make dashboard: not implemented yet, lands with the API."

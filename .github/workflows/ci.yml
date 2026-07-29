@@ -50,3 +50,20 @@ jobs:
 
       - name: Confirm the database was created in the repository root
         run: test -f cell-count.db
+
+      # outputs/ is committed, so regenerating it must be a no-op. This is the
+      # only check that runs on a different machine from the one that committed
+      # the files, which is where a PNG carrying a matplotlib version or a CSV
+      # carrying CRLF would first show up.
+      #
+      # `git status --porcelain`, not `git diff`: the latter compares tracked
+      # files only, so it passes vacuously while outputs/ is untracked and stays
+      # blind to a newly added artifact filename afterwards.
+      - name: Confirm the committed outputs are what the pipeline produces
+        run: |
+          changed="$(git status --porcelain --untracked-files=all outputs/)"
+          if [ -n "$changed" ]; then
+            echo "make pipeline did not reproduce the committed outputs:"
+            echo "$changed"
+            exit 1
+          fi

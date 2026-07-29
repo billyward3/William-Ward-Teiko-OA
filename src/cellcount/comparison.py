@@ -19,6 +19,13 @@ That makes the remaining q-values slightly less conservative, which is the right
 trade because a population with no variance carries no power. The number of tests
 the correction ran over should be reported alongside the results.
 
+**Two intervals per population, at two levels.** `shift_ci` covers one
+population at `alpha`. `simultaneous_ci` covers the whole family at `alpha`, by
+computing each interval at `alpha / n_tested`. A reader who takes five marginal
+95% intervals and says "no population shifts by more than the widest of these"
+has made a joint claim the marginal level does not support, so both are supplied
+and the caller is expected to say which one it is quoting.
+
 **Independence is reported, not assumed.** Each subject in the real data has
 three samples, so a cohort spanning timepoints pools correlated observations and
 inflates the effective sample size. `n_samples`, `n_subjects`, and
@@ -29,10 +36,12 @@ from __future__ import annotations
 
 import math
 import sqlite3
+from collections.abc import Sequence
 from dataclasses import dataclass
 from statistics import NormalDist, median
 
 import numpy as np
+import numpy.typing as npt
 from scipy.stats import false_discovery_control, mannwhitneyu
 
 from cellcount.cohort import (
@@ -57,6 +66,16 @@ MIN_GROUP_SIZE = 4
 # It doubles as an allowlist: `split_on` arrives from HTTP query parameters and
 # is the one value interpolated into SQL rather than bound.
 _SPLIT_COLUMNS = FILTER_COLUMNS
+
+# Display only. `"yes"` and `"no"` are the values the response column stores;
+# nothing keys off these strings. Kept here rather than in each renderer so the
+# figure and the write-up cannot disagree about what a group is called.
+GROUP_LABELS = {"no": "non-responder", "yes": "responder"}
+
+
+def group_label(group: str) -> str:
+    """A readable name for a split value, falling back to the value itself."""
+    return GROUP_LABELS.get(group, group)
 
 
 class ComparisonError(ValueError):
@@ -105,6 +124,19 @@ class PopulationComparison:
     7% of population-results across the cohorts in this dataset. Anything
     rendering both together should say which one governs.
     """
+    simultaneous_ci: tuple[float, float] | None
+    """The same interval widened so that the whole family holds jointly at `alpha`.
+
+    `shift_ci` is marginal: it covers this population and no other. A statement
+    quantified over populations ("no population shifts by more than x") is a
+    joint claim, and a family of marginal intervals at `alpha` can hold jointly
+    with probability as low as 1 - n_tested * alpha. This one is computed at
+    `simultaneous_alpha`, which restores the family's level by Bonferroni and
+    assumes nothing about how the populations depend on one another.
+
+    Quote this one for a claim about every population at once, and `shift_ci`
+    for a claim about one.
+    """
     effect_size: float | None
     """P(x > y) + 0.5 * P(x = y), for x drawn from `groups[0]` and y from `groups[1]`.
 
@@ -134,21 +166,66 @@ class ComparisonResult:
     populations: list[PopulationComparison]
 
 
-def _shift_and_interval(
-    left: list[float], right: list[float], alpha: float
-) -> tuple[float, tuple[float, float]]:
-    """Hodges-Lehmann shift and its distribution-free confidence interval.
+def simultaneous_alpha(alpha: float, n_tested: int) -> float:
+    """The per-interval level at which `n_tested` intervals hold jointly at `alpha`.
+
+    Bonferroni. Defined here rather than inline so the interval that is
+    computed and the confidence level that is printed beside it cannot drift
+    apart. It is the conservative choice deliberately: the alternatives assume
+    something about how the populations depend on one another, and closure
+    constrains that dependence in a way this design does not pin down.
+    """
+    return alpha / n_tested if n_tested > 0 else alpha
+
+
+# Below this, 1 - tail rounds to 1.0 in double precision and the inverse CDF
+# has nothing left to invert.
+_SMALLEST_USABLE_TAIL = 1e-15
+
+
+def _interval(
+    differences: npt.NDArray[np.float64], n_left: int, n_right: int, alpha: float
+) -> tuple[float, float]:
+    """Invert the rank test at `alpha` by cutting k in from each end.
+
+    `differences` must already be sorted, and must be every left-minus-right
+    pair, or the index arithmetic below means nothing.
+    """
+    total = int(differences.size)
+    # 1 - alpha/2 rounds to exactly 1.0 below about 2e-16, and NormalDist then
+    # raises from inside statistics with a message that never mentions alpha.
+    # `compare` validates the level it was given, but dividing by n_tested for
+    # the simultaneous interval can push the derived level under that floor.
+    tail = max(alpha / 2.0, _SMALLEST_USABLE_TAIL)
+    z = float(NormalDist().inv_cdf(1 - tail))
+    spread = math.sqrt(n_left * n_right * (n_left + n_right + 1) / 12.0)
+    # Coverage of [D_(k+1), D_(mn-k)] is 1 - 2*P(U <= k), so the cut is the
+    # largest k with P(U <= k) <= alpha/2. The normal approximation gives the
+    # quantile itself; stepping one below it is what keeps the interval
+    # conservative rather than overclaiming.
+    k = int(round(n_left * n_right / 2.0 - z * spread)) - 1
+    # The lower clamp is reachable: a wide alpha drives k negative. The upper
+    # bound is not, since k <= mn/2 - 1 for every alpha in (0, 1), so it is
+    # asserted rather than silently applied.
+    k = max(0, k)
+    assert k <= (total - 1) // 2, "interval indices would cross"
+    return (float(differences[k]), float(differences[total - 1 - k]))
+
+
+def _shift_and_intervals(
+    left: list[float], right: list[float], alphas: Sequence[float]
+) -> tuple[float, list[tuple[float, float]]]:
+    """Hodges-Lehmann shift and one interval per level in `alphas`.
 
     The shift is the median of all pairwise differences, which is the location
     estimate Mann-Whitney actually tests, so it cannot disagree with the
-    p-value the way a difference of means could. The interval comes from
-    inverting the same test: order those differences and cut k in from each
-    end.
+    p-value the way a difference of means could. Each interval comes from
+    inverting the same test.
 
-    Both are derived from one sorted array. Computing them separately built the
-    m*n differences twice, which on the unfiltered cohort meant 20 million
-    values materialised four times over and turned a 0.1 second call into more
-    than a minute.
+    Every level is served from one sorted array. Computing them separately
+    built the m*n differences once per level, which on the unfiltered cohort
+    meant 20 million values materialised four times over and turned a 0.1
+    second call into more than a minute.
     """
     differences = np.sort(
         (
@@ -156,21 +233,10 @@ def _shift_and_interval(
             - np.asarray(right, dtype=float)[None, :]
         ).ravel()
     )
-    total = int(differences.size)
     n_left, n_right = len(left), len(right)
-
-    z = float(NormalDist().inv_cdf(1 - alpha / 2))
-    spread = math.sqrt(n_left * n_right * (n_left + n_right + 1) / 12.0)
-    # Coverage of [D_(k+1), D_(mn-k)] is 1 - 2*P(U <= k), so the cut is the
-    # largest k with P(U <= k) <= alpha/2. The normal approximation gives the
-    # quantile itself; stepping one below it is what keeps the interval
-    # conservative rather than overclaiming.
-    k = int(round(n_left * n_right / 2.0 - z * spread)) - 1
-    k = max(0, min(k, (total - 1) // 2))
-
     return (
         float(np.median(differences)),
-        (float(differences[k]), float(differences[total - 1 - k])),
+        [_interval(differences, n_left, n_right, alpha) for alpha in alphas],
     )
 
 
@@ -262,7 +328,11 @@ def compare(
     effect_sizes: dict[str, float] = {}
     shifts: dict[str, float] = {}
     intervals: dict[str, tuple[float, float]] = {}
+    joint_intervals: dict[str, tuple[float, float]] = {}
 
+    # First pass: the p-values, which are what decide the size of the family.
+    # The intervals cannot be computed until that size is known, because the
+    # simultaneous one is taken at alpha divided by it.
     for population in populations:
         left = values[population][first]
         right = values[population][second]
@@ -278,8 +348,20 @@ def compare(
         p_values[population] = p_value
         # U is independent of `alternative`, so it comes from the same call.
         effect_sizes[population] = float(test.statistic) / (len(left) * len(right))
-        shifts[population], intervals[population] = _shift_and_interval(
-            left, right, alpha
+
+    # Second pass: the shift and both intervals, from one difference array per
+    # population. Splitting the loop costs a second Mann-Whitney-free walk of
+    # the tested populations; recomputing the differences would cost far more.
+    joint_alpha = simultaneous_alpha(alpha, len(p_values))
+    for population in p_values:
+        (
+            shifts[population],
+            (
+                intervals[population],
+                joint_intervals[population],
+            ),
+        ) = _shift_and_intervals(
+            values[population][first], values[population][second], (alpha, joint_alpha)
         )
 
     # Correct only across populations that were actually tested.
@@ -299,6 +381,7 @@ def compare(
             q_value=q_values.get(population),
             shift=shifts.get(population),
             shift_ci=intervals.get(population),
+            simultaneous_ci=joint_intervals.get(population),
             effect_size=effect_sizes.get(population),
         )
         for population in populations
@@ -315,3 +398,32 @@ def compare(
         alpha=alpha,
         populations=comparisons,
     )
+
+
+def yekutieli_q_values(result: ComparisonResult) -> dict[str, float]:
+    """The same p-values re-corrected under Benjamini-Yekutieli.
+
+    Benjamini-Hochberg controls the false discovery rate under independence or
+    positive regression dependence. Frequencies that sum to 100 cannot all be
+    positively related, since closure forces each part's covariances with the
+    rest to sum to minus its own variance, so neither condition is established
+    for this data and the guarantee is asserted rather than earned.
+
+    Benjamini-Yekutieli holds under arbitrary dependence, at the cost of a
+    factor of sum(1/i) in power. That makes it a sensitivity check on the
+    headline correction rather than a replacement for it: a conclusion that
+    survives both does not turn on the assumption.
+
+    Returns an empty mapping when nothing was tested, which is the same thing
+    `q_value` being None says on each population.
+    """
+    p_values = {
+        comparison.population: comparison.p_value
+        for comparison in result.populations
+        if comparison.p_value is not None
+    }
+    if not p_values:
+        return {}
+    tested = sorted(p_values)
+    adjusted = false_discovery_control([p_values[p] for p in tested], method="by")
+    return {p: float(q) for p, q in zip(tested, adjusted, strict=True)}
