@@ -797,7 +797,7 @@ def test_comparison_errors_are_value_errors(
     """The ValueError base is why existing callers kept working."""
     assert issubclass(ComparisonError, ValueError)
     with pytest.raises(ValueError):
-        compare(no_difference, Cohort(response="yes"))
+        compare(no_difference, Cohort(), split_on="sex")
 
 
 def test_can_split_on_a_column_other_than_response(
@@ -845,9 +845,14 @@ def test_rejects_an_unknown_split_column(no_difference: sqlite3.Connection) -> N
 def test_rejects_a_split_that_yields_one_group(
     no_difference: sqlite3.Connection,
 ) -> None:
-    """A user error: this cohort is legal, it just cannot be compared."""
+    """A user error: this cohort is legal, it just cannot be compared.
+
+    Every subject in this fixture is male, so splitting on sex leaves one
+    group. Filtering a field and then splitting on it no longer reaches here,
+    because that request now clears the filter rather than failing.
+    """
     with pytest.raises(NotTwoGroups, match="two groups"):
-        compare(no_difference, Cohort(response="yes"))
+        compare(no_difference, Cohort(), split_on="sex")
 
 
 def test_the_two_rejections_are_distinguishable(
@@ -864,7 +869,7 @@ def test_the_two_rejections_are_distinguishable(
     assert not issubclass(NotTwoGroups, UnknownSplitColumn)
 
     with pytest.raises(ComparisonError):
-        compare(no_difference, Cohort(response="yes"))
+        compare(no_difference, Cohort(), split_on="sex")
 
 
 def test_null_split_values_are_excluded(conn: sqlite3.Connection) -> None:
@@ -888,3 +893,31 @@ def test_null_split_values_are_excluded(conn: sqlite3.Connection) -> None:
 
     result = compare(conn, Cohort())
     assert set(result.n_samples) == {"yes", "no"}
+
+
+def test_splitting_on_a_field_ignores_the_cohort_filter_on_that_field(
+    no_difference: sqlite3.Connection,
+) -> None:
+    """Asking to compare a field's levels while pinning it to one is incoherent.
+
+    The spec's own cohort fixes sample_type to PBMC, so before this the
+    dashboard's "split on sample type" could only ever return an error. The
+    filter is dropped and the cohort actually used is reported back, so the
+    caption cannot claim a constraint the comparison did not apply.
+    """
+    result = compare(no_difference, Cohort(response="yes"), split_on="response")
+
+    assert result.groups == ("no", "yes")
+    assert result.cohort.response is None
+
+
+def test_clearing_the_split_field_leaves_the_rest_of_the_cohort_alone(
+    no_difference: sqlite3.Connection,
+) -> None:
+    """Only the split field is dropped, not the cohort."""
+    cohort = Cohort(condition="melanoma", response="yes", timepoints=(0,))
+    result = compare(no_difference, cohort, split_on="response")
+
+    assert result.cohort.condition == "melanoma"
+    assert result.cohort.timepoints == (0,)
+    assert result.cohort.response is None

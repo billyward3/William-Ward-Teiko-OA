@@ -111,8 +111,18 @@ def test_filters_come_from_the_data(client: TestClient) -> None:
 def test_filters_name_the_columns_a_comparison_can_split_on(
     client: TestClient,
 ) -> None:
+    """Only the fields that can actually yield two groups.
+
+    A rank test compares two groups and the filters are single-select, so
+    offering `condition` or `treatment`, which have three levels each, put an
+    entry in the dropdown that returned 400 whatever the user did with it.
+    """
     body = get(client, "/api/filters")
-    assert body["split_columns"] == sorted(FILTER_COLUMNS)
+    two_level = {field for field, values in body["fields"].items() if len(values) == 2}
+    assert body["split_columns"] == sorted(two_level)
+    assert "condition" not in body["split_columns"]
+    assert "treatment" not in body["split_columns"]
+    assert set(body["split_columns"]) <= set(FILTER_COLUMNS)
 
 
 def test_filters_carry_the_cohort_the_dashboard_should_open_on(
@@ -330,13 +340,31 @@ def test_comparison_of_an_empty_cohort_is_well_formed(client: TestClient) -> Non
     assert body["n_tested"] == 0
 
 
-def test_one_group_is_the_users_mistake_not_the_servers(client: TestClient) -> None:
-    """Selecting `response = yes` and splitting on response is a plausible click."""
-    response = client.get("/api/comparison", params={"response": "yes"})
+def test_a_split_with_more_than_two_levels_is_the_users_mistake(
+    client: TestClient,
+) -> None:
+    """The dropdown no longer offers it, but the endpoint still has to answer."""
+    response = client.get(
+        "/api/comparison", params={"split_on": "condition", "condition": ""}
+    )
     assert response.status_code == 400, response.text
     detail = response.json()["detail"]
-    assert "response" in detail
+    assert "condition" in detail
     assert "two groups" in detail
+
+
+def test_filtering_a_field_and_splitting_on_it_clears_the_filter(
+    client: TestClient,
+) -> None:
+    """Selecting `response = yes` and splitting on response is a plausible click.
+
+    It used to be a 400. Pinning a field to one value and asking to compare its
+    levels has one sensible reading, so the filter is dropped and the cohort
+    actually used is echoed back.
+    """
+    body = get(client, "/api/comparison", response="yes")
+    assert body["groups"] == ["no", "yes"]
+    assert body["cohort"]["response"] is None
 
 
 def test_an_unknown_split_column_is_rejected_before_it_reaches_the_analysis(

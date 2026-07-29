@@ -37,7 +37,7 @@ from __future__ import annotations
 import math
 import sqlite3
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from statistics import NormalDist, median
 
 import numpy as np
@@ -284,6 +284,14 @@ def compare(
         raise UnknownSplitColumn(
             f"cannot split on {split_on!r}; expected one of {sorted(_SPLIT_COLUMNS)}"
         )
+
+    # Splitting on a field means comparing its levels, so a cohort that pins
+    # that field to one value asks for a comparison against nothing. Drop it and
+    # report the cohort actually used, rather than failing on a request whose
+    # intent is unambiguous. From the spec's own cohort, which fixes
+    # sample_type to PBMC, this is what makes "split on sample_type" mean
+    # "PBMC against WB, otherwise the same patients".
+    cohort = replace(cohort, **{split_on: None})
 
     split_column = _SPLIT_COLUMNS[split_on]
     fragments, params = conditions(cohort)

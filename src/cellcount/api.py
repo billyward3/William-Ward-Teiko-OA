@@ -464,7 +464,15 @@ def read_filters(conn: Database) -> FilterOptionsOut:
         fields=options.fields,
         timepoints=options.timepoints,
         populations=options.populations,
-        split_columns=sorted(FILTER_COLUMNS),
+        # Only fields with exactly two levels. A rank test compares two groups
+        # and the filters are single-select, so offering `condition` (carcinoma,
+        # healthy, melanoma) or `treatment` (miraclib, none, phauximab) put an
+        # entry in the dropdown that returned 400 whatever the user did with it.
+        # Derived from the data, so a future panel carrying two conditions
+        # offers that split without anyone remembering to allow it.
+        split_columns=sorted(
+            field for field, values in options.fields.items() if len(values) == 2
+        ),
         default_cohort=CohortOut.of(BASELINE_COHORT),
     )
 
