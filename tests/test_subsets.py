@@ -150,13 +150,43 @@ def test_subjects_with_no_response_are_excluded(db: sqlite3.Connection) -> None:
 def test_an_empty_cohort_reports_zeros_rather_than_nothing(
     db: sqlite3.Connection,
 ) -> None:
-    _add_subject(db, "sbj1")
+    _add_subject(db, "sbj1", sex="M", response="yes")
+    _add_subject(db, "sbj2", sex="F", response="no")
     db.commit()
 
     counts = subset_counts(db, Cohort(condition="nonexistent"))
     assert counts.samples_per_project == {"prj1": 0, "prj2": 0, "prj3": 0}
-    assert counts.subjects_per_response == {}
-    assert counts.subjects_per_sex == {}
+    assert counts.subjects_per_response == {"no": 0, "yes": 0}
+    assert counts.subjects_per_sex == {"F": 0, "M": 0}
+
+
+def test_an_excluded_response_arm_reports_zero(db: sqlite3.Connection) -> None:
+    """A client rendering "responders vs non-responders" needs both keys."""
+    _add_subject(db, "sbj1", response="yes")
+    _add_subject(db, "sbj2", response="no")
+    db.commit()
+
+    counts = subset_counts(db, Cohort(response="yes"))
+    assert counts.subjects_per_response == {"no": 0, "yes": 1}
+
+
+def test_an_excluded_sex_reports_zero(db: sqlite3.Connection) -> None:
+    _add_subject(db, "sbj1", sex="M")
+    _add_subject(db, "sbj2", sex="F")
+    db.commit()
+
+    counts = subset_counts(db, Cohort(sex="M"))
+    assert counts.subjects_per_sex == {"F": 0, "M": 1}
+
+
+def test_grouping_by_an_unlisted_column_is_rejected(db: sqlite3.Connection) -> None:
+    """The one interpolated identifier is allowlisted, as in comparison.py."""
+    from cellcount.subsets import _counts_by, _known_values
+
+    with pytest.raises(ValueError, match="group by"):
+        _counts_by(db, Cohort(), "subjects.age", distinct_subjects=False)
+    with pytest.raises(ValueError, match="enumerate"):
+        _known_values(db, "subjects; DROP TABLE samples")
 
 
 def test_keys_are_ordered_deterministically(db: sqlite3.Connection) -> None:

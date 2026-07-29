@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Immune cell population analysis for the Loblaw Bio trial"
 requires-python = ">=3.12"
 dependencies = [
+    "numpy>=2.0",
     # false_discovery_control (Benjamini-Hochberg) landed in scipy 1.11
     "scipy>=1.11",
     "matplotlib>=3.8",

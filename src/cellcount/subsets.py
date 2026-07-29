@@ -31,6 +31,13 @@ FROM samples
 JOIN subjects USING (subject_id)
 """
 
+# `column` is interpolated into SQL rather than bound, because a column name
+# cannot be a bound parameter. Every caller below passes a literal, but the
+# allowlist means that stays true even if one day a caller passes a variable.
+_GROUPABLE_COLUMNS = frozenset(
+    {"subjects.project_id", "subjects.response", "subjects.sex"}
+)
+
 
 def _counts_by(
     conn: sqlite3.Connection,
@@ -40,6 +47,9 @@ def _counts_by(
     distinct_subjects: bool,
     exclude_null: bool = False,
 ) -> dict[str, int]:
+    if column not in _GROUPABLE_COLUMNS:
+        raise ValueError(f"cannot group by {column!r}")
+
     fragments, params = conditions(cohort)
     if exclude_null:
         fragments.append(f"{column} IS NOT NULL")
@@ -51,32 +61,68 @@ def _counts_by(
     return {row[0]: row[1] for row in conn.execute(sql, params)}
 
 
+def _known_values(conn: sqlite3.Connection, column: str) -> list[str]:
+    """Every value a column takes across the whole dataset, not just this cohort.
+
+    Used to zero-fill, so a category the cohort excludes is reported as absent
+    rather than simply missing from the result.
+    """
+    if column not in _GROUPABLE_COLUMNS:
+        raise ValueError(f"cannot enumerate {column!r}")
+    _, _, name = column.partition(".")
+    return [
+        row[0]
+        for row in conn.execute(
+            f"SELECT DISTINCT {name} FROM subjects "
+            f"WHERE {name} IS NOT NULL ORDER BY {name}"
+        )
+    ]
+
+
 def subset_counts(
     conn: sqlite3.Connection, cohort: Cohort = ALL_SAMPLES
 ) -> SubsetCounts:
     """Break a cohort down by project, response, and sex.
 
     Note the counting units differ, matching how the spec words each question.
+
+    Every category known to the dataset appears, including those the cohort
+    matched zero of. Omitting them reads as though the category does not exist,
+    and a client rendering "responders versus non-responders" would otherwise
+    get a missing key rather than a zero.
     """
-    present = _counts_by(conn, cohort, "subjects.project_id", distinct_subjects=False)
-    # Every known project appears, so an absent one reads as zero rather than
-    # as a project that does not exist.
+
+    def filled(
+        column: str, *, distinct_subjects: bool, domain: list[str]
+    ) -> dict[str, int]:
+        present = _counts_by(
+            conn,
+            cohort,
+            column,
+            distinct_subjects=distinct_subjects,
+            exclude_null=True,
+        )
+        return {value: present.get(value, 0) for value in domain}
+
+    # Projects come from their own table, which is authoritative: a project
+    # with no subjects at all still exists and should still be listed.
     all_projects = [
         row[0]
         for row in conn.execute("SELECT project_id FROM projects ORDER BY project_id")
     ]
-    samples_per_project = {project: present.get(project, 0) for project in all_projects}
 
     return SubsetCounts(
-        samples_per_project=samples_per_project,
-        subjects_per_response=_counts_by(
-            conn,
-            cohort,
+        samples_per_project=filled(
+            "subjects.project_id", distinct_subjects=False, domain=all_projects
+        ),
+        subjects_per_response=filled(
             "subjects.response",
             distinct_subjects=True,
-            exclude_null=True,
+            domain=_known_values(conn, "subjects.response"),
         ),
-        subjects_per_sex=_counts_by(
-            conn, cohort, "subjects.sex", distinct_subjects=True
+        subjects_per_sex=filled(
+            "subjects.sex",
+            distinct_subjects=True,
+            domain=_known_values(conn, "subjects.sex"),
         ),
     )

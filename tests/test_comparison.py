@@ -19,7 +19,13 @@ import sqlite3
 import pytest
 
 from cellcount.cohort import Cohort
-from cellcount.comparison import compare
+from cellcount.comparison import (
+    ComparisonError,
+    NotTwoGroups,
+    UnknownSplitColumn,
+    _shift_and_interval,
+    compare,
+)
 from cellcount.db import connect, create_schema
 from cellcount.loader import POPULATIONS
 
@@ -582,6 +588,97 @@ def test_a_looser_confidence_level_gives_a_narrower_interval(
     assert width(0.20) < width(0.01)
 
 
+def test_interval_endpoints_match_a_hand_computed_reference() -> None:
+    """Pins the index arithmetic, which qualitative assertions cannot reach.
+
+    Tests the private function directly: every property the public tests can
+    check (contains the shift, contains zero under the null, narrower than the
+    range, narrower at looser alpha) is satisfied by a numerically wrong
+    interval, which is how an off-by-one survived.
+
+    The fixture is shaped so the arithmetic is observable. All 48 pairwise
+    differences are distinct, so moving k by one moves an endpoint; and m != n,
+    so confusing the two group sizes changes the spread. An earlier version
+    used equal sizes and eight repeated values per block, and three separate
+    wrong formulas produced identical output.
+
+        left  = 0, 100, 200, 300, 400, 500      (m = 6)
+        right = 0, 1, 2, 3, 4, 5, 6, 7          (n = 8)
+
+    The differences fall into six blocks of eight: -7..0, 93..100, 193..200,
+    293..300, 393..400, 493..500. With alpha = 0.05:
+
+        spread = sqrt(6 * 8 * 15 / 12) = 7.7460
+        k      = round(24 - 1.959964 * 7.7460) - 1 = 8
+
+    so the endpoints are index 8 (93) and index 39 (400), and the median is the
+    mean of indices 23 and 24, which is (200 + 293) / 2.
+    """
+    left = [0.0, 100.0, 200.0, 300.0, 400.0, 500.0]
+    right = [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]
+
+    shift, (low, high) = _shift_and_interval(left, right, 0.05)
+
+    assert shift == pytest.approx(246.5)
+    assert (low, high) == (93.0, 400.0)
+
+
+def test_shift_is_the_median_of_differences_not_a_difference_of_medians() -> None:
+    """These coincide on symmetric data, so the fixture is deliberately not.
+
+    median(left) - median(right) = 1 - 9 = -8, while the median of the nine
+    pairwise differences is 0.
+    """
+    shift, _ = _shift_and_interval([0, 1, 10], [0, 9, 10], 0.05)
+    assert shift == pytest.approx(0.0)
+
+
+def test_the_interval_is_never_inverted_at_a_loose_alpha() -> None:
+    """A clamp that permitted k = total/2 crossed the endpoints over."""
+    for alpha in (0.5, 0.8, 0.9, 0.99):
+        _, (low, high) = _shift_and_interval([0, 10, 20, 30], [1, 3, 7, 100], alpha)
+        assert low <= high, f"inverted at alpha={alpha}"
+
+
+def test_alpha_is_reported_on_the_result(no_difference: sqlite3.Connection) -> None:
+    """Otherwise a reader cannot tell what confidence level the intervals used."""
+    assert compare(no_difference, Cohort(), alpha=0.10).alpha == 0.10
+
+
+def test_rejects_an_alpha_outside_the_unit_interval(
+    no_difference: sqlite3.Connection,
+) -> None:
+    """NormalDist would otherwise raise something that never mentions alpha."""
+    for bad in (0.0, 1.0, -0.1, 1.5):
+        with pytest.raises(ValueError, match="alpha"):
+            compare(no_difference, Cohort(), alpha=bad)
+
+
+def test_comparison_errors_are_value_errors(
+    no_difference: sqlite3.Connection,
+) -> None:
+    """The ValueError base is why existing callers kept working."""
+    assert issubclass(ComparisonError, ValueError)
+    with pytest.raises(ValueError):
+        compare(no_difference, Cohort(response="yes"))
+
+
+def test_can_split_on_a_column_other_than_response(
+    no_difference: sqlite3.Connection,
+) -> None:
+    """Reusing the cohort vocabulary is only useful if the other columns work."""
+    no_difference.execute(
+        "UPDATE subjects SET sex = 'F' WHERE subject_id IN "
+        "(SELECT subject_id FROM subjects ORDER BY subject_id LIMIT 12)"
+    )
+    no_difference.commit()
+
+    result = compare(no_difference, Cohort(), split_on="sex")
+    assert result.split_on == "sex"
+    assert result.groups == ("F", "M")
+    assert result.n_samples == {"F": 12, "M": 12}
+
+
 def test_n_tested_reports_how_many_entered_the_correction(
     no_difference: sqlite3.Connection,
 ) -> None:
@@ -603,14 +700,33 @@ def test_n_tested_excludes_untestable_populations(conn: sqlite3.Connection) -> N
 
 
 def test_rejects_an_unknown_split_column(no_difference: sqlite3.Connection) -> None:
-    with pytest.raises(ValueError, match="split"):
+    """A programmer error: the column name is not user data."""
+    with pytest.raises(UnknownSplitColumn, match="split"):
         compare(no_difference, Cohort(), split_on="subjects; DROP TABLE samples")
 
 
 def test_rejects_a_split_that_yields_one_group(
     no_difference: sqlite3.Connection,
 ) -> None:
-    with pytest.raises(ValueError, match="two groups"):
+    """A user error: this cohort is legal, it just cannot be compared."""
+    with pytest.raises(NotTwoGroups, match="two groups"):
+        compare(no_difference, Cohort(response="yes"))
+
+
+def test_the_two_rejections_are_distinguishable(
+    no_difference: sqlite3.Connection,
+) -> None:
+    """One is a bug and one is a bad request, so the API must tell them apart.
+
+    Both subclass ValueError for backwards compatibility, which is exactly why
+    catching ValueError alone would collapse them into one status code.
+    """
+    assert issubclass(UnknownSplitColumn, ComparisonError)
+    assert issubclass(NotTwoGroups, ComparisonError)
+    assert not issubclass(UnknownSplitColumn, NotTwoGroups)
+    assert not issubclass(NotTwoGroups, UnknownSplitColumn)
+
+    with pytest.raises(ComparisonError):
         compare(no_difference, Cohort(response="yes"))
 
 
