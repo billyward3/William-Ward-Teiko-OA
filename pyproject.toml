@@ -50,7 +50,7 @@ select = [
 [tool.mypy]
 python_version = "3.12"
 strict = true
-files = ["src", "tests"]   # load_data.py added in Phase 1, once it exists
+files = ["src", "tests", "load_data.py"]
 
 # These ship without type information; we still type our own call sites.
 [[tool.mypy.overrides]]
