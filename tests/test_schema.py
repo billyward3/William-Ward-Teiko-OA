@@ -43,7 +43,29 @@ def test_create_schema_is_idempotent(conn: sqlite3.Connection) -> None:
     create_schema(conn)
 
 
-def test_foreign_keys_are_enforced(conn: sqlite3.Connection) -> None:
+EXPECTED_INDEXES = [
+    "idx_cell_counts_population",
+    "idx_samples_filters",
+    "idx_samples_subject",
+    "idx_subjects_filters",
+    "idx_subjects_project",
+]
+
+
+def test_create_schema_creates_expected_indexes(conn: sqlite3.Connection) -> None:
+    """Indexes are the whole answer to the scaling question, so assert they exist."""
+    create_schema(conn)
+    names = [
+        row[0]
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'index' "
+            "AND name LIKE 'idx_%' ORDER BY name"
+        )
+    ]
+    assert names == EXPECTED_INDEXES
+
+
+def test_foreign_keys_are_enforced_on_samples(conn: sqlite3.Connection) -> None:
     """SQLite defaults this off, so it is a property of how we connect."""
     create_schema(conn)
     with pytest.raises(sqlite3.IntegrityError):
@@ -51,6 +73,43 @@ def test_foreign_keys_are_enforced(conn: sqlite3.Connection) -> None:
             "INSERT INTO samples "
             "(sample_id, subject_id, sample_type, time_from_treatment_start) "
             "VALUES ('s1', 'nonexistent-subject', 'PBMC', 0)"
+        )
+
+
+def test_foreign_keys_are_enforced_on_subjects(conn: sqlite3.Connection) -> None:
+    """Every edge, not just one: a single passing edge proves only that one."""
+    create_schema(conn)
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            "INSERT INTO subjects (subject_id, project_id, condition, sex) "
+            "VALUES ('sbj1', 'nonexistent-project', 'melanoma', 'M')"
+        )
+
+
+def test_foreign_keys_are_enforced_on_cell_counts(conn: sqlite3.Connection) -> None:
+    create_schema(conn)
+    _seed_minimal(conn)
+    conn.execute(
+        "INSERT INTO samples "
+        "(sample_id, subject_id, sample_type, time_from_treatment_start) "
+        "VALUES ('s1', 'sbj1', 'PBMC', 0)"
+    )
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            "INSERT INTO cell_counts (sample_id, population_id, count) "
+            "VALUES ('s1', 999, 10)"
+        )
+
+
+def test_timepoint_is_required(conn: sqlite3.Connection) -> None:
+    """A sample with no timepoint cannot be placed on the treatment timeline."""
+    create_schema(conn)
+    _seed_minimal(conn)
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            "INSERT INTO samples "
+            "(sample_id, subject_id, sample_type, time_from_treatment_start) "
+            "VALUES ('s1', 'sbj1', 'PBMC', NULL)"
         )
 
 

@@ -30,7 +30,7 @@ from __future__ import annotations
 import math
 import sqlite3
 from dataclasses import dataclass
-from statistics import median
+from statistics import NormalDist, median
 
 from scipy.stats import false_discovery_control, mannwhitneyu
 
@@ -66,6 +66,20 @@ class PopulationComparison:
     values: dict[str, list[float]]
     p_value: float | None
     q_value: float | None
+    shift: float | None
+    """Hodges-Lehmann estimate: the median of all pairwise differences.
+
+    In percentage points, oriented like `effect_size`, so positive means
+    `groups[0]` is higher. This is the location shift Mann-Whitney actually
+    tests, which makes it the right companion to its p-value.
+    """
+    shift_ci: tuple[float, float] | None
+    """95% confidence interval for `shift`, from the Mann-Whitney inversion.
+
+    This is what turns a null result into a bounded one. A p-value above the
+    threshold says a difference was not detected; an interval says how large a
+    difference the data can rule out.
+    """
     effect_size: float | None
     """P(x > y) + 0.5 * P(x = y), for x drawn from `groups[0]` and y from `groups[1]`.
 
@@ -85,7 +99,44 @@ class ComparisonResult:
     n_samples: dict[str, int]
     n_subjects: dict[str, int]
     repeated_measures: bool
+    n_tested: int
+    """How many populations entered the multiple-comparison correction.
+
+    A q-value is meaningless without it, and it is not always the full five:
+    a population that is entirely tied, or absent from one group, is excluded.
+    """
+    alpha: float
     populations: list[PopulationComparison]
+
+
+def _hodges_lehmann(left: list[float], right: list[float]) -> float:
+    """Median of all pairwise differences, the location estimate for Mann-Whitney.
+
+    Robust in the same way the test is, so it cannot disagree with the p-value
+    the way a difference of means could.
+    """
+    return median([x - y for x in left for y in right])
+
+
+def _shift_interval(
+    left: list[float], right: list[float], alpha: float
+) -> tuple[float, float]:
+    """Distribution-free interval for the Hodges-Lehmann shift.
+
+    Obtained by inverting the Mann-Whitney test: order the pairwise
+    differences and cut k in from each end, where k comes from the normal
+    approximation to the null distribution of U.
+    """
+    differences = sorted(x - y for x in left for y in right)
+    total = len(differences)
+    n_left, n_right = len(left), len(right)
+
+    z = float(NormalDist().inv_cdf(1 - alpha / 2))
+    spread = math.sqrt(n_left * n_right * (n_left + n_right + 1) / 12.0)
+    k = int(round(n_left * n_right / 2.0 - z * spread))
+    k = max(0, min(k, total // 2))
+
+    return differences[k], differences[total - 1 - k]
 
 
 _BASE_SQL = """
@@ -105,6 +156,7 @@ def compare(
     conn: sqlite3.Connection,
     cohort: Cohort = ALL_SAMPLES,
     split_on: str = "response",
+    alpha: float = 0.05,
 ) -> ComparisonResult:
     """Compare population frequencies between the two groups of `split_on`.
 
@@ -133,6 +185,8 @@ def compare(
             n_samples={},
             n_subjects={},
             repeated_measures=False,
+            n_tested=0,
+            alpha=alpha,
             populations=[],
         )
 
@@ -167,6 +221,8 @@ def compare(
     )
     p_values: dict[str, float] = {}
     effect_sizes: dict[str, float] = {}
+    shifts: dict[str, float] = {}
+    intervals: dict[str, tuple[float, float]] = {}
 
     for population in populations:
         left = values[population][first]
@@ -183,6 +239,8 @@ def compare(
         p_values[population] = p_value
         # U is independent of `alternative`, so it comes from the same call.
         effect_sizes[population] = float(test.statistic) / (len(left) * len(right))
+        shifts[population] = _hodges_lehmann(left, right)
+        intervals[population] = _shift_interval(left, right, alpha)
 
     # Correct only across populations that were actually tested.
     q_values: dict[str, float] = {}
@@ -199,6 +257,8 @@ def compare(
             values={g: list(values[population][g]) for g in groups},
             p_value=p_values.get(population),
             q_value=q_values.get(population),
+            shift=shifts.get(population),
+            shift_ci=intervals.get(population),
             effect_size=effect_sizes.get(population),
         )
         for population in populations
@@ -211,5 +271,7 @@ def compare(
         n_samples=n_samples,
         n_subjects=n_subjects,
         repeated_measures=any(n_samples[g] > n_subjects[g] for g in groups),
+        n_tested=len(p_values),
+        alpha=alpha,
         populations=comparisons,
     )
