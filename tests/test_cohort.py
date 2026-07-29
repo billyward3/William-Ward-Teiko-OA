@@ -11,7 +11,45 @@ preference, and it is tested as one.
 
 from __future__ import annotations
 
-from cellcount.cohort import Cohort, where_clause
+from cellcount.cohort import (
+    ALL_SAMPLES,
+    Cohort,
+    conditions,
+    render_where,
+    where_clause,
+)
+
+
+def test_conditions_returns_fragments_without_the_where_keyword() -> None:
+    fragments, params = conditions(Cohort(condition="melanoma", sex="M"))
+    assert fragments == ["subjects.condition = ?", "subjects.sex = ?"]
+    assert params == ["melanoma", "M"]
+
+
+def test_conditions_of_an_unconstrained_cohort_are_empty() -> None:
+    assert conditions(ALL_SAMPLES) == ([], [])
+
+
+def test_render_where_joins_with_and() -> None:
+    assert render_where(["a = ?", "b = ?"]) == "WHERE a = ? AND b = ?"
+
+
+def test_render_where_of_nothing_is_an_empty_string() -> None:
+    assert render_where([]) == ""
+
+
+def test_a_caller_can_append_its_own_condition() -> None:
+    """`compare` needs an IS NOT NULL alongside the cohort's own filters.
+
+    Appending to the list beats string surgery on an already-rendered clause,
+    which is what forced every caller to know the WHERE-prefix convention.
+    """
+    fragments, params = conditions(Cohort(condition="melanoma"))
+    fragments.append("subjects.response IS NOT NULL")
+    assert render_where(fragments) == (
+        "WHERE subjects.condition = ? AND subjects.response IS NOT NULL"
+    )
+    assert params == ["melanoma"]
 
 
 def test_empty_cohort_produces_no_clause() -> None:

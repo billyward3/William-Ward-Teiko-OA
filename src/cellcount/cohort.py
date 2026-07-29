@@ -11,6 +11,7 @@ special cases.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 # Cohort field -> the qualified column it filters on. Order fixes the order of
@@ -46,30 +47,39 @@ Frozen, so it is safe to share as a default argument.
 """
 
 
-def where_clause(cohort: Cohort) -> tuple[str, list[object]]:
-    """Build a parameterized WHERE clause for a cohort.
+def conditions(cohort: Cohort) -> tuple[list[str], list[object]]:
+    """The cohort's SQL conditions and their bound parameters, without WHERE.
 
-    Returns the SQL fragment including the WHERE keyword, or an empty string if
-    the cohort constrains nothing, so it can be interpolated straight after a
-    FROM clause either way.
+    Returned unrendered so a caller needing an extra condition of its own can
+    append to the list, rather than doing string surgery on a clause that
+    already carries the keyword.
 
-    Every value is returned as a bound parameter. Nothing the caller supplies is
-    ever formatted into the SQL text.
+    Every value is a bound parameter. Nothing the caller supplies is ever
+    formatted into SQL text.
     """
-    conditions: list[str] = []
+    fragments: list[str] = []
     params: list[object] = []
 
     for field, column in FILTER_COLUMNS.items():
         value = getattr(cohort, field)
         if value is not None:
-            conditions.append(f"{column} = ?")
+            fragments.append(f"{column} = ?")
             params.append(value)
 
     if cohort.timepoints:
         placeholders = ", ".join("?" for _ in cohort.timepoints)
-        conditions.append(f"{_TIMEPOINT_COLUMN} IN ({placeholders})")
+        fragments.append(f"{_TIMEPOINT_COLUMN} IN ({placeholders})")
         params.extend(cohort.timepoints)
 
-    if not conditions:
-        return "", []
-    return "WHERE " + " AND ".join(conditions), params
+    return fragments, params
+
+
+def render_where(fragments: Sequence[str]) -> str:
+    """Join conditions into a WHERE clause, or an empty string if there are none."""
+    return "WHERE " + " AND ".join(fragments) if fragments else ""
+
+
+def where_clause(cohort: Cohort) -> tuple[str, list[object]]:
+    """The common case: a cohort's own conditions, rendered and ready to append."""
+    fragments, params = conditions(cohort)
+    return render_where(fragments), params

@@ -34,7 +34,13 @@ from statistics import median
 
 from scipy.stats import false_discovery_control, mannwhitneyu
 
-from cellcount.cohort import ALL_SAMPLES, FILTER_COLUMNS, Cohort, where_clause
+from cellcount.cohort import (
+    ALL_SAMPLES,
+    FILTER_COLUMNS,
+    Cohort,
+    conditions,
+    render_where,
+)
 
 # Smallest group a rank test is reported for. At three per group the smallest
 # achievable two-sided p is 0.100, so no result could clear alpha even before
@@ -114,10 +120,9 @@ def compare(
         )
 
     split_column = _SPLIT_COLUMNS[split_on]
-    clause, params = where_clause(cohort)
-    null_filter = f"{split_column} IS NOT NULL"
-    clause = f"{clause} AND {null_filter}" if clause else f"WHERE {null_filter}"
-    sql = _BASE_SQL.format(split_column=split_column) + clause
+    fragments, params = conditions(cohort)
+    fragments.append(f"{split_column} IS NOT NULL")
+    sql = _BASE_SQL.format(split_column=split_column) + render_where(fragments)
 
     rows = conn.execute(sql, params).fetchall()
     if not rows:
