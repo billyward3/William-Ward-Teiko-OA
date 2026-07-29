@@ -15,9 +15,13 @@ setup:
 pipeline:
 	python -m cellcount.pipeline
 
+# One process on one port: FastAPI serves the analysis under /api and the built
+# frontend, if there is one, at the root. Binds every interface rather than
+# loopback, because a Codespace forwards the port from outside the container.
+#
+# Needs the database, which `make pipeline` builds.
 dashboard:
-	@echo "make dashboard: not implemented yet, lands with the API."
-	@exit 1
+	python -m cellcount.api
 
 test:
 	python -m pytest

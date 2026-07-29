@@ -25,7 +25,13 @@ FILTER_COLUMNS: dict[str, str] = {
     "sample_type": "samples.sample_type",
 }
 
-_TIMEPOINT_COLUMN = "samples.time_from_treatment_start"
+TIMEPOINT_COLUMN = "samples.time_from_treatment_start"
+"""Not in `FILTER_COLUMNS` because it is filtered with IN rather than =.
+
+Public so that anything else naming this column, such as the filter options a
+dashboard populates its dropdowns from, reads it from here rather than
+repeating the string.
+"""
 
 
 @dataclass(frozen=True)
@@ -68,7 +74,7 @@ def conditions(cohort: Cohort) -> tuple[list[str], list[object]]:
 
     if cohort.timepoints:
         placeholders = ", ".join("?" for _ in cohort.timepoints)
-        fragments.append(f"{_TIMEPOINT_COLUMN} IN ({placeholders})")
+        fragments.append(f"{TIMEPOINT_COLUMN} IN ({placeholders})")
         params.extend(cohort.timepoints)
 
     return fragments, params
