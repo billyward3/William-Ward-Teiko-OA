@@ -30,3 +30,23 @@ jobs:
 
       - name: Test
         run: python -m pytest
+
+  pipeline:
+    # A clean-machine proxy for the Codespace the graders use. A warm local
+    # virtualenv hides dependency and permission problems; this does not.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up exactly as a grader would
+        run: make setup
+
+      - name: Run the pipeline
+        run: make pipeline
+
+      - name: Confirm the database was created in the repository root
+        run: test -f cell-count.db
