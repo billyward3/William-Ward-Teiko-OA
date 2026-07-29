@@ -10,11 +10,25 @@ repository root resolves the real locations from its own position.
 
 from __future__ import annotations
 
+import sqlite3
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 
+from cellcount.db import connect
+
 REPO_ROOT = Path(__file__).parent.parent
+
+
+@pytest.fixture
+def conn() -> Iterator[sqlite3.Connection]:
+    """An empty in-memory database, opened the same way the app opens one."""
+    connection = connect(":memory:")
+    try:
+        yield connection
+    finally:
+        connection.close()
 
 
 @pytest.fixture(scope="session")
