@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -529,6 +530,44 @@ def test_a_built_frontend_is_served_at_the_root(api_db: Path, tmp_path: Path) ->
 
 
 # --- operational failures ---------------------------------------------------
+
+
+def test_every_endpoint_answers_when_several_requests_arrive_at_once(
+    api_db: Path,
+) -> None:
+    """The dashboard issues four requests on load, and they overlap.
+
+    Each is handled on a worker thread, and a sync dependency's setup does not
+    run on the same worker as the path operation that consumes it. A connection
+    carrying sqlite3's default same-thread guard therefore fails as soon as two
+    requests are in flight, while every sequential test above passes because the
+    pool keeps handing back the one idle thread.
+
+    This is the only test that puts more than one request in the air at a time,
+    which is why it is the one that found it.
+    """
+    paths = [
+        "/api/filters",
+        "/api/summary",
+        "/api/comparison",
+        "/api/subsets",
+        "/api/mean-count",
+    ]
+    app = create_app(db_path=api_db)
+    # Server exceptions are turned into 500s rather than re-raised, so a failure
+    # reports which endpoints broke instead of whichever traceback arrived first.
+    with (
+        TestClient(app, raise_server_exceptions=False) as client,
+        ThreadPoolExecutor(max_workers=8) as pool,
+    ):
+        responses = list(pool.map(client.get, paths * 6))
+
+    failed = {
+        response.request.url.path
+        for response in responses
+        if response.status_code != 200
+    }
+    assert failed == set()
 
 
 def test_a_missing_database_is_reported_rather_than_created(tmp_path: Path) -> None:

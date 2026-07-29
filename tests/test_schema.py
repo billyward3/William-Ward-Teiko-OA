@@ -9,10 +9,12 @@ connection turns them on.
 from __future__ import annotations
 
 import sqlite3
+import threading
+from pathlib import Path
 
 import pytest
 
-from cellcount.db import create_schema
+from cellcount.db import connect, create_schema
 
 EXPECTED_TABLES = ["cell_counts", "populations", "projects", "samples", "subjects"]
 
@@ -171,3 +173,38 @@ def test_one_count_per_sample_and_population(conn: sqlite3.Connection) -> None:
             "INSERT INTO cell_counts (sample_id, population_id, count) "
             "VALUES ('s1', 1, 20)"
         )
+
+
+def test_a_connection_can_be_used_by_a_thread_that_did_not_open_it(
+    tmp_path: Path,
+) -> None:
+    """FastAPI opens the connection and runs the endpoint on different threads.
+
+    A sync dependency's setup runs in one worker of the threadpool and the path
+    operation that consumes it runs in another, so sqlite3's default
+    same-thread guard rejects every request the moment two arrive at once. A
+    browser loading the dashboard issues three, which is how this was found.
+
+    Access stays serialized: one connection per request, handed from thread to
+    thread but never used by two at the same time. This test is the contract
+    that makes relaxing the guard safe rather than merely quiet.
+    """
+    database = tmp_path / "cell-count.db"
+    opener = connect(database)
+    try:
+        create_schema(opener)
+        result: list[object] = []
+
+        def read() -> None:
+            try:
+                result.append(opener.execute("SELECT COUNT(*) FROM samples").fetchone())
+            except Exception as error:  # noqa: BLE001 - the failure is the point
+                result.append(error)
+
+        elsewhere = threading.Thread(target=read)
+        elsewhere.start()
+        elsewhere.join()
+
+        assert result == [(0,)], result
+    finally:
+        opener.close()

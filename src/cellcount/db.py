@@ -100,8 +100,21 @@ def connect(database: str | Path) -> sqlite3.Connection:
     SQLite disables foreign keys by default, per connection rather than per
     database, so every caller has to opt in. Routing all connections through
     here means no code path can silently skip it.
+
+    `check_same_thread` is off because the API's request handlers are synchronous
+    and FastAPI runs them on a thread pool: a dependency's setup and the path
+    operation that consumes its connection are not guaranteed the same worker.
+    With the guard on, the server answers sequential requests and fails the
+    moment two overlap, which is every page load.
+
+    That is safe here for two reasons, and only those two. `sqlite3.threadsafety`
+    is 3 on CPython, meaning the library serializes access itself; and the API
+    opens one connection per request and closes it when the request ends, so a
+    connection is handed between threads but never used by two at once. Anything
+    that shares one connection across concurrent work breaks that argument, and
+    the guard will no longer be there to say so.
     """
-    conn = sqlite3.connect(database)
+    conn = sqlite3.connect(database, check_same_thread=False)
     conn.execute("PRAGMA foreign_keys = ON")
     return conn
 

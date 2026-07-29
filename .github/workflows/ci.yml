@@ -31,6 +31,36 @@ jobs:
       - name: Test
         run: python -m pytest
 
+  frontend:
+    # The dashboard's own gate, run beside the Python one rather than after it:
+    # neither depends on the other, and a type error should not wait on pytest.
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # The version .devcontainer/devcontainer.json pins, so a Codespace and
+          # CI build the same tree.
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install from the lockfile
+        run: npm ci
+
+      - name: Type check
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
   pipeline:
     # A clean-machine proxy for the Codespace the graders use. A warm local
     # virtualenv hides dependency and permission problems; this does not.
@@ -42,8 +72,22 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Set up exactly as a grader would
-        run: make setup
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      # The dashboard is one deliverable among five, and it is the only one that
+      # needs a second toolchain. If npm is missing or broken, `make setup` has
+      # to warn and carry on, or a bad network day costs Parts 1 to 4 as well.
+      - name: Confirm a broken npm does not take the data deliverables with it
+        run: |
+          mkdir -p "$RUNNER_TEMP/broken"
+          printf '#!/bin/sh\nexit 1\n' > "$RUNNER_TEMP/broken/npm"
+          chmod +x "$RUNNER_TEMP/broken/npm"
+          PATH="$RUNNER_TEMP/broken:$PATH" make setup
+          test ! -d frontend/dist
 
       - name: Run the pipeline
         run: make pipeline
@@ -68,10 +112,14 @@ jobs:
             exit 1
           fi
 
+      - name: Set up exactly as a grader would
+        run: make setup
+
       # The third graded target, and the only one the suite cannot cover: the
       # tests drive the application through a test client, not through a process
       # that has to bind a port. Started in the background, polled until it
-      # answers, then asked for an analysis rather than merely for a 200.
+      # answers, then asked for an analysis and for the dashboard itself, rather
+      # than merely for a 200.
       - name: Confirm the dashboard server starts and serves the analysis
         run: |
           make dashboard &
@@ -82,4 +130,5 @@ jobs:
             sleep 1
           done
           curl -sf http://127.0.0.1:8000/api/subsets > /dev/null
+          curl -sf http://127.0.0.1:8000/ | grep -q 'id="root"'
           pkill -f cellcount.api || true

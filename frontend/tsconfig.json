@@ -1,0 +1,29 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "jsx": "react-jsx",
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "noImplicitOverride": true,
+    "noImplicitReturns": true,
+    "exactOptionalPropertyTypes": true,
+    "verbatimModuleSyntax": true,
+    "isolatedModules": true,
+    "moduleDetection": "force",
+    "resolveJsonModule": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+
+    // Every index into an array yields `T | undefined`. Kept on because this
+    // app indexes arrays where the arithmetic is the point: the quantile
+    // interpolation below reads `sorted[floor]` and `sorted[floor + 1]`, and an
+    // off-by-one there is a wrong box rather than a crash.
+    "noUncheckedIndexedAccess": true
+  },
+  "include": ["src", "vite.config.ts", "vitest.setup.ts"]
+}
