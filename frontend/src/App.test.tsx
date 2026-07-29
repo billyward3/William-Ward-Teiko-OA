@@ -127,7 +127,17 @@ describe("App", () => {
     const requested = stubApi();
     render(<App />);
 
-    await screen.findByRole("heading", { name: /breakdown of the filtered subset/i });
+    // Wait for the request this test is about, not for a different section's
+    // heading. The comparison is issued only once /api/filters resolves and
+    // supplies the default cohort; the subsets request does not wait on that.
+    // Keying off Part 4's heading therefore let Part 3's request still be in
+    // flight, and `find` returned undefined. Observed failing once in ten runs
+    // before this change.
+    await waitFor(() => {
+      expect(requested.some((url) => url.startsWith("/api/comparison"))).toBe(
+        true,
+      );
+    });
 
     const comparisonRequest = requested.find((url) =>
       url.startsWith("/api/comparison"),

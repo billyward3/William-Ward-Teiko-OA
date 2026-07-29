@@ -93,13 +93,31 @@ export function StatisticsTable({
         </thead>
         <tbody>
           {comparison.populations.map((population) => {
-            const significant =
-              population.q_value !== null && population.q_value < alpha;
+            // `<=`, matching the write-up, which says "at q <= alpha". A
+            // q exactly equal to alpha was significant there and unbadged here.
+            const belowThreshold =
+              population.q_value !== null && population.q_value <= alpha;
             return (
               <tr key={population.population}>
                 <th scope="row">
                   {population.population}
-                  {significant && <span className="badge">significant</span>}
+                  {belowThreshold &&
+                    (comparison.repeated_measures ? (
+                      // The banner above already says these p-values are
+                      // optimistic, so badging the row "significant" would have
+                      // the page contradict itself. On this dataset that is not
+                      // hypothetical: pooling every timepoint puts three
+                      // populations below alpha, and restricting to one sample
+                      // per subject, the same people, leaves none.
+                      <span
+                        className="badge badge--quiet"
+                        title="Below alpha, but the cohort counts some subjects more than once, so the threshold does not mean what it usually means. Restrict to a single day to assess this."
+                      >
+                        below alpha, not independent
+                      </span>
+                    ) : (
+                      <span className="badge">significant</span>
+                    ))}
                   {population.q_value === null && (
                     <span
                       className="badge badge--quiet"

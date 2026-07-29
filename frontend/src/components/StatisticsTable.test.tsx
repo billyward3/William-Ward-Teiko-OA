@@ -160,4 +160,34 @@ describe("StatisticsTable", () => {
     render(<StatisticsTable comparison={borderline} />);
     expect(screen.queryByText("significant")).toBeNull();
   });
+
+  it("treats a q exactly at alpha as significant, as the write-up does", () => {
+    // findings.md says "at q <= alpha". A strict `<` here made the dashboard
+    // and the document disagree about the one value that sits on the line.
+    const onTheLine: Comparison = {
+      ...COMPARISON,
+      populations: [{ ...TESTED_SIGNIFICANT, q_value: COMPARISON.alpha }],
+    };
+    render(<StatisticsTable comparison={onTheLine} />);
+    expect(screen.getByText("significant")).toBeInTheDocument();
+  });
+
+  it("withholds the significant badge when subjects are counted twice", () => {
+    // The banner above the table already says these p-values are optimistic
+    // under repeated measures, so badging a row "significant" would have the
+    // page contradict itself. Not hypothetical on the delivered data: pooling
+    // every timepoint puts three populations below alpha, and restricting to
+    // one sample per subject, the same 3,026 people, leaves none.
+    const pooled: Comparison = { ...COMPARISON, repeated_measures: true };
+    render(<StatisticsTable comparison={pooled} />);
+
+    expect(screen.queryByText("significant")).toBeNull();
+    expect(
+      within(row("b_cell")).getByText("below alpha, not independent"),
+    ).toBeInTheDocument();
+    // The numbers themselves are still reported; only the verdict is withheld.
+    // q = 0.0012 renders to three places, so the reader can still see it
+    // cleared alpha and decide for themselves.
+    expect(within(row("b_cell")).getByText("0.001")).toBeInTheDocument();
+  });
 });
