@@ -619,7 +619,9 @@ def test_interval_endpoints_match_a_hand_computed_reference() -> None:
     left = [0.0, 100.0, 200.0, 300.0, 400.0, 500.0]
     right = [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]
 
-    shift, [(low, high)] = _shift_and_intervals(left, right, (0.05,))
+    shift, [interval] = _shift_and_intervals(left, right, (0.05,))
+    assert interval is not None
+    low, high = interval
 
     assert shift == pytest.approx(246.5)
     assert (low, high) == (93.0, 400.0)
@@ -638,10 +640,37 @@ def test_shift_is_the_median_of_differences_not_a_difference_of_medians() -> Non
 def test_the_interval_is_never_inverted_at_a_loose_alpha() -> None:
     """A clamp that permitted k = total/2 crossed the endpoints over."""
     for alpha in (0.5, 0.8, 0.9, 0.99):
-        _, [(low, high)] = _shift_and_intervals(
-            [0, 10, 20, 30], [1, 3, 7, 100], (alpha,)
-        )
+        _, [interval] = _shift_and_intervals([0, 10, 20, 30], [1, 3, 7, 100], (alpha,))
+        assert interval is not None
+        low, high = interval
         assert low <= high, f"inverted at alpha={alpha}"
+
+
+def test_no_interval_is_offered_when_the_groups_are_too_small_for_the_level() -> None:
+    """Sixteen pairwise differences cannot support 99%, so none is returned.
+
+    Their full range covers about 97%. Clamping to it would hand back the
+    marginal 95% interval under a 99% label, and a caller printing both would
+    show identical numbers in adjacent columns headed 95% and 99%.
+    """
+    four = [1.0, 2.0, 3.0, 4.0]
+    other = [1.5, 2.5, 3.5, 4.5]
+
+    _, [marginal, joint] = _shift_and_intervals(four, other, (0.05, 0.01))
+    assert marginal is not None
+    assert joint is None
+
+
+def test_a_small_cohort_reports_no_simultaneous_interval(
+    conn: sqlite3.Connection,
+) -> None:
+    """Reachable through `compare`: MIN_GROUP_SIZE permits four per group."""
+    create_schema(conn)
+    _seed_groups(conn, {"yes": _BASELINE[:4], "no": _B_CELL_SHIFTED[:4]})
+
+    for population in compare(conn, Cohort()).populations:
+        assert population.shift_ci is not None
+        assert population.simultaneous_ci is None
 
 
 def test_alpha_is_reported_on_the_result(no_difference: sqlite3.Connection) -> None:

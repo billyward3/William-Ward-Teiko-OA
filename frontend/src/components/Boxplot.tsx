@@ -1,5 +1,10 @@
 import { boxStats, jitterOffset, niceScale, pointStyle } from "../lib/boxplot";
-import { formatCount, formatInterval, formatProbability } from "../lib/format";
+import {
+  formatCount,
+  formatInterval,
+  formatProbability,
+  formatSigned,
+} from "../lib/format";
 import type { PopulationComparison } from "../lib/types";
 
 /**
@@ -62,9 +67,14 @@ export function Boxplot({
     <figure className="boxplot">
       <figcaption className="boxplot__title">
         <span className="boxplot__population">{comparison.population}</span>
+        {/* "shift" names the point estimate here and nowhere else. Attaching it
+            to the interval made this caption disagree with the statistics table
+            below it and with the committed PNG, both of which use the word the
+            other way. */}
         <span className="boxplot__stats">
           q = {formatProbability(comparison.q_value)} · shift{" "}
-          {formatInterval(comparison.shift_ci)} pp
+          {formatSigned(comparison.shift)} pp · CI{" "}
+          {formatInterval(comparison.shift_ci)}
         </span>
       </figcaption>
 

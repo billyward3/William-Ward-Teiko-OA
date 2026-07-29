@@ -95,22 +95,43 @@ jobs:
       - name: Confirm the database was created in the repository root
         run: test -f cell-count.db
 
-      # outputs/ is committed, so regenerating it must be a no-op. This is the
+      # Two different properties, because they do not hold equally.
+      #
+      # The tables and the write-up are plain text and reproduce byte for byte
+      # anywhere, so they are compared against what is committed. This is the
       # only check that runs on a different machine from the one that committed
-      # the files, which is where a PNG carrying a matplotlib version or a CSV
-      # carrying CRLF would first show up.
+      # them, which is where a CSV carrying CRLF would first show up.
       #
       # `git status --porcelain`, not `git diff`: the latter compares tracked
       # files only, so it passes vacuously while outputs/ is untracked and stays
       # blind to a newly added artifact filename afterwards.
-      - name: Confirm the committed outputs are what the pipeline produces
+      - name: Confirm the committed tables and write-up are what the pipeline produces
         run: |
-          changed="$(git status --porcelain --untracked-files=all outputs/)"
+          changed="$(git status --porcelain --untracked-files=all -- \
+            'outputs/*.csv' 'outputs/*.md')"
           if [ -n "$changed" ]; then
             echo "make pipeline did not reproduce the committed outputs:"
             echo "$changed"
             exit 1
           fi
+
+      # The figure is raster, and matplotlib rasterises text through freetype,
+      # whose version differs between the machine that committed the PNG and
+      # this runner. Byte-identity across platforms was never achievable and
+      # claiming it was wrong. What is achievable, and what actually guards
+      # against an embedded timestamp or unseeded jitter, is that two runs on
+      # the same machine agree.
+      - name: Confirm the figure is reproducible
+        run: |
+          before="$(shasum -a 256 outputs/part3_boxplot_baseline.png | cut -d' ' -f1)"
+          make pipeline > /dev/null
+          after="$(shasum -a 256 outputs/part3_boxplot_baseline.png | cut -d' ' -f1)"
+          if [ "$before" != "$after" ]; then
+            echo "the figure changed between two runs on the same machine"
+            exit 1
+          fi
+          # Restore the committed bytes so later steps see a clean tree.
+          git checkout -- outputs/part3_boxplot_baseline.png
 
       - name: Set up exactly as a grader would
         run: make setup

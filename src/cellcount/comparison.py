@@ -185,11 +185,18 @@ _SMALLEST_USABLE_TAIL = 1e-15
 
 def _interval(
     differences: npt.NDArray[np.float64], n_left: int, n_right: int, alpha: float
-) -> tuple[float, float]:
+) -> tuple[float, float] | None:
     """Invert the rank test at `alpha` by cutting k in from each end.
 
     `differences` must already be sorted, and must be every left-minus-right
     pair, or the index arithmetic below means nothing.
+
+    Returns None when the groups are too small to support an interval at this
+    level. With m = n = 4 there are 16 pairwise differences and their full range
+    covers about 97%, so a 99% interval does not exist. Clamping to the full
+    range instead would return the marginal 95% interval under a 99% label, and
+    a caller printing both would show identical numbers in adjacent columns
+    headed 95% and 99%.
     """
     total = int(differences.size)
     # 1 - alpha/2 rounds to exactly 1.0 below about 2e-16, and NormalDist then
@@ -204,17 +211,19 @@ def _interval(
     # quantile itself; stepping one below it is what keeps the interval
     # conservative rather than overclaiming.
     k = int(round(n_left * n_right / 2.0 - z * spread)) - 1
-    # The lower clamp is reachable: a wide alpha drives k negative. The upper
-    # bound is not, since k <= mn/2 - 1 for every alpha in (0, 1), so it is
-    # asserted rather than silently applied.
-    k = max(0, k)
+    # A narrow alpha against few pairs drives k below zero, which means the
+    # requested level is unreachable rather than that it needs clamping. The
+    # upper bound is unreachable in the other direction, since k <= mn/2 - 1
+    # for every alpha in (0, 1), so it is asserted rather than applied.
+    if k < 0:
+        return None
     assert k <= (total - 1) // 2, "interval indices would cross"
     return (float(differences[k]), float(differences[total - 1 - k]))
 
 
 def _shift_and_intervals(
     left: list[float], right: list[float], alphas: Sequence[float]
-) -> tuple[float, list[tuple[float, float]]]:
+) -> tuple[float, list[tuple[float, float] | None]]:
     """Hodges-Lehmann shift and one interval per level in `alphas`.
 
     The shift is the median of all pairwise differences, which is the location
@@ -327,8 +336,11 @@ def compare(
     p_values: dict[str, float] = {}
     effect_sizes: dict[str, float] = {}
     shifts: dict[str, float] = {}
-    intervals: dict[str, tuple[float, float]] = {}
-    joint_intervals: dict[str, tuple[float, float]] = {}
+    # Either can be None when the groups are too small to support an interval at
+    # that level, which the simultaneous one reaches first because its level is
+    # narrower by a factor of n_tested.
+    intervals: dict[str, tuple[float, float] | None] = {}
+    joint_intervals: dict[str, tuple[float, float] | None] = {}
 
     # First pass: the p-values, which are what decide the size of the family.
     # The intervals cannot be computed until that size is known, because the

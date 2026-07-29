@@ -18,7 +18,6 @@ export const PAGE_SIZES = [50, 100, 250, 500, 1000] as const;
 export interface SummarySectionProps {
   resource: Resource<SummaryPage>;
   limit: number;
-  offset: number;
   onOffsetChange: (offset: number) => void;
   onLimitChange: (limit: number) => void;
 }
@@ -26,15 +25,20 @@ export interface SummarySectionProps {
 export function SummarySection({
   resource,
   limit,
-  offset,
   onOffsetChange,
   onLimitChange,
 }: SummarySectionProps): React.JSX.Element {
   const page = resource.data;
   const total = page?.total ?? 0;
   const shown = page?.rows.length ?? 0;
-  const first = total === 0 ? 0 : offset + 1;
-  const last = offset + shown;
+  // Every number in the caption comes from the page on screen, never from the
+  // local `offset`. The two diverge whenever a page turn fails: the rows are
+  // still the previous page's while `offset` has already moved, so mixing the
+  // sources captioned rows 1-100 as "Rows 101-200". The API echoes the offset
+  // it actually served for exactly this reason.
+  const servedOffset = page?.offset ?? 0;
+  const first = shown === 0 ? 0 : servedOffset + 1;
+  const last = servedOffset + shown;
 
   return (
     <Section
@@ -75,16 +79,16 @@ export function SummarySection({
               <button
                 type="button"
                 onClick={() => {
-                  onOffsetChange(Math.max(0, offset - limit));
+                  onOffsetChange(Math.max(0, servedOffset - limit));
                 }}
-                disabled={offset === 0}
+                disabled={servedOffset === 0}
               >
                 Previous
               </button>
               <button
                 type="button"
                 onClick={() => {
-                  onOffsetChange(offset + limit);
+                  onOffsetChange(servedOffset + limit);
                 }}
                 disabled={last >= total}
               >

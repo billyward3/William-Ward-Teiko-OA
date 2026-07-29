@@ -72,7 +72,18 @@ describe("Boxplot", () => {
   it("quotes the API's q-value and interval rather than recomputing them", () => {
     renderPlot();
     expect(screen.getByText(/q = 0\.102/)).toBeInTheDocument();
-    expect(screen.getByText(/\[−0\.40, \+6\.10\] pp/)).toBeInTheDocument();
+    expect(screen.getByText(/\[−0\.40, \+6\.10\]/)).toBeInTheDocument();
+  });
+
+  it("labels the point estimate and the interval as different things", () => {
+    // An earlier caption read "shift [−0.40, +6.10] pp", attaching the word to
+    // the interval. The statistics table below the chart and the committed PNG
+    // both use "shift" for the point estimate, so the dashboard was the one
+    // saying something different about the same figure.
+    renderPlot();
+    const stats = screen.getByText(/q = 0\.102/);
+    expect(stats.textContent).toMatch(/shift\s*\+3\.20\s*pp/);
+    expect(stats.textContent).toMatch(/CI\s*\[−0\.40, \+6\.10\]/);
   });
 
   it("describes itself to a screen reader", () => {

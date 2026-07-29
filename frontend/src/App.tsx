@@ -121,7 +121,6 @@ function Dashboard({ options }: { options: FilterOptions }): React.JSX.Element {
       <SummarySection
         resource={summary}
         limit={limit}
-        offset={offset}
         onOffsetChange={setOffset}
         onLimitChange={changeLimit}
       />
