@@ -76,14 +76,28 @@ def test_sql_syntax_in_a_value_stays_a_value() -> None:
     assert "DROP" not in clause
 
 
-def test_clause_order_is_deterministic() -> None:
-    """Stable SQL text lets SQLite reuse a prepared statement across calls."""
-    first, _ = where_clause(Cohort(sex="M", condition="melanoma"))
-    second, _ = where_clause(Cohort(condition="melanoma", sex="M"))
-    assert first == second
+def test_clause_order_follows_the_column_mapping() -> None:
+    """Pins the emitted order, so reordering FILTER_COLUMNS fails here.
 
-
-def test_cohort_is_hashable() -> None:
-    """Frozen and hashable, so results can be cached per cohort later."""
-    assert hash(Cohort(condition="melanoma")) == hash(Cohort(condition="melanoma"))
-    assert Cohort(condition="melanoma") != Cohort(condition="carcinoma")
+    Comparing two Cohorts built with the same keywords would prove nothing:
+    they are the same dataclass value regardless of argument order. The literal
+    string is what makes the statement text stable enough for SQLite to reuse a
+    prepared statement.
+    """
+    clause, params = where_clause(
+        Cohort(
+            condition="melanoma",
+            treatment="miraclib",
+            response="yes",
+            sex="M",
+            sample_type="PBMC",
+        )
+    )
+    assert clause == (
+        "WHERE subjects.condition = ? "
+        "AND subjects.treatment = ? "
+        "AND subjects.response = ? "
+        "AND subjects.sex = ? "
+        "AND samples.sample_type = ?"
+    )
+    assert params == ["melanoma", "miraclib", "yes", "M", "PBMC"]

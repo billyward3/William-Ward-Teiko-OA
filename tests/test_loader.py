@@ -247,6 +247,34 @@ def test_nothing_is_written_when_validation_fails(
     assert _scalar(db, "SELECT COUNT(*) FROM samples") == 0
 
 
+def test_raises_on_a_truncated_row(db: sqlite3.Connection, tmp_path: Path) -> None:
+    """csv.DictReader fills short rows with None, and int(None) is a TypeError.
+
+    Catching only ValueError would let it escape unnamed, which is exactly the
+    failure this loader validates to prevent.
+    """
+    path = tmp_path / "short.csv"
+    with path.open("w", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(HEADER)
+        writer.writerow(_row()[:12])  # cut off partway through the counts
+
+    with pytest.raises(DataValidationError):
+        load_csv(db, path)
+
+
+def test_raises_on_an_overlong_row(db: sqlite3.Connection, tmp_path: Path) -> None:
+    """Extra fields land under a None key and would otherwise be dropped silently."""
+    path = tmp_path / "long.csv"
+    with path.open("w", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(HEADER)
+        writer.writerow([*_row(), "unexpected"])
+
+    with pytest.raises(DataValidationError):
+        load_csv(db, path)
+
+
 def test_raises_on_missing_column(db: sqlite3.Connection, tmp_path: Path) -> None:
     path = tmp_path / "bad.csv"
     with path.open("w", newline="") as handle:

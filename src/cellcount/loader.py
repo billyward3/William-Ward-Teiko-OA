@@ -61,20 +61,37 @@ def _read_rows(csv_path: Path) -> list[dict[str, str]]:
         missing = [c for c in REQUIRED_COLUMNS if c not in (reader.fieldnames or [])]
         if missing:
             raise DataValidationError(f"missing required column(s): {missing}")
-        return list(reader)
+
+        rows = list(reader)
+
+    # DictReader pads a short row with None values and files a long row's extras
+    # under the None key. Both are silent by default, so check for them here.
+    for number, row in enumerate(rows, start=2):  # row 1 is the header
+        if None in row:
+            raise DataValidationError(f"row {number}: more fields than columns")
+        short = [column for column, value in row.items() if value is None]
+        if short:
+            raise DataValidationError(f"row {number}: missing values for {short}")
+    return rows
 
 
-def _parse_int(raw: str, *, field: str, sample: str) -> int:
+def _parse_int(raw: str | None, *, field: str, sample: str) -> int:
     """Parse an integer, naming the offending field if it is not one.
 
     `str.isdigit` is not a substitute: it accepts superscripts like '²', and
     stripping a leading '-' first lets '--5' through. Both then fail inside
-    int() mid-write, which is exactly what validating up front is meant to
-    prevent.
+    int() mid-write, which is what validating up front is meant to prevent.
+
+    Note it is looser than isdigit in other directions, accepting '+10', ' 10 ',
+    and '1_0'. That is acceptable for a count column and worth knowing.
+
+    TypeError is caught as a fallback only. A short row would reach here as
+    None, but `_read_rows` rejects ragged rows first and names the row number,
+    which is the better error.
     """
     try:
-        return int(raw)
-    except ValueError:
+        return int(raw)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
         raise DataValidationError(
             f"sample {sample}: {field} is not an integer: {raw!r}"
         ) from None
@@ -137,7 +154,8 @@ def _validate_subject_attributes(rows: list[dict[str, str]]) -> None:
 def _clear(conn: sqlite3.Connection) -> None:
     # Children before parents, so foreign keys stay satisfied throughout.
     for table in ("cell_counts", "samples", "subjects", "projects", "populations"):
-        conn.execute(f"DELETE FROM {table}")  # noqa: S608 - fixed table names
+        # Table names come from the fixed tuple above, never from input.
+        conn.execute(f"DELETE FROM {table}")
 
 
 def load_csv(conn: sqlite3.Connection, csv_path: Path) -> LoadSummary:

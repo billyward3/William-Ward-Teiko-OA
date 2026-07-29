@@ -7,10 +7,17 @@ Three decisions are encoded here rather than left to the caller.
 Note it tests stochastic dominance, so it is a test of medians only when the two
 distributions share a shape.
 
-**Benjamini-Hochberg across all five populations.** Five tests at alpha = 0.05
-carry roughly a 23% chance of at least one false positive. Controlling the false
-discovery rate is the right choice for screening, and it is why every population
-is computed in one call: a q-value depends on the whole set of p-values.
+**Benjamini-Hochberg across every population that could be tested.** Five tests
+at alpha = 0.05 carry roughly a 23% chance of at least one false positive.
+Controlling the false discovery rate is the right choice for screening, and it is
+why every population is computed in one call: a q-value depends on the whole set
+of p-values.
+
+The set is usually all five, but a population that is entirely tied, or absent
+from one group, is excluded from the correction rather than entered at p = 1.
+That makes the remaining q-values slightly less conservative, which is the right
+trade because a population with no variance carries no power. The number of tests
+the correction ran over should be reported alongside the results.
 
 **Independence is reported, not assumed.** Each subject in the real data has
 three samples, so a cohort spanning timepoints pools correlated observations and
@@ -144,7 +151,15 @@ def compare(
     n_subjects = {g: len(s) for g, s in subjects_by_group.items()}
 
     first, second = groups
-    populations = sorted(values)
+    # A population present in only one group has nothing to compare, and its
+    # median would be taken over an empty list. Drop it rather than raise:
+    # StatisticsError subclasses ValueError, so it would otherwise be
+    # indistinguishable from a caller error at the API boundary.
+    populations = sorted(
+        population
+        for population, by_group in values.items()
+        if all(by_group[group] for group in groups)
+    )
     p_values: dict[str, float] = {}
     effect_sizes: dict[str, float] = {}
 

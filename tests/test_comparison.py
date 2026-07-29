@@ -2,9 +2,9 @@
 
 Two properties matter more than the p-values themselves.
 
-Benjamini-Hochberg is applied across all five populations at once, so a q-value
-cannot be computed for one population in isolation. That is why `compare`
-returns every population from a single call.
+Benjamini-Hochberg is applied across every testable population at once, so a
+q-value cannot be computed for one population in isolation. That is why
+`compare` returns every population from a single call.
 
 Every subject in the real data contributes three samples, so a cohort spanning
 timepoints violates the independence assumption of the test. The result reports
@@ -20,7 +20,7 @@ import pytest
 
 from cellcount.cohort import Cohort
 from cellcount.comparison import compare
-from cellcount.db import create_schema
+from cellcount.db import connect, create_schema
 from cellcount.loader import POPULATIONS
 
 Counts = tuple[int, int, int, int, int]
@@ -252,6 +252,117 @@ def test_effect_size_is_none_below_the_minimum_group_size(
     _seed_groups(conn, {"yes": _BASELINE[:2], "no": _BASELINE[:2]})
     for population in compare(conn, Cohort()).populations:
         assert population.effect_size is None
+
+
+def _benjamini_hochberg(p_values: list[float]) -> list[float]:
+    """BH written out longhand, so the test does not check scipy against itself.
+
+    Walking from the largest p-value down, each adjusted value is the running
+    minimum of (m / rank) * p, capped at 1.
+    """
+    m = len(p_values)
+    ascending = sorted(range(m), key=lambda i: p_values[i])
+    adjusted = [0.0] * m
+    running_min = 1.0
+    for offset, index in enumerate(reversed(ascending), start=1):
+        rank = m - offset + 1
+        running_min = min(running_min, p_values[index] * m / rank)
+        adjusted[index] = min(1.0, running_min)
+    return adjusted
+
+
+def test_q_values_are_the_benjamini_hochberg_adjustment(
+    planted_difference: sqlite3.Connection,
+) -> None:
+    """Pins the correction itself.
+
+    The surrounding tests (q >= p, monotone, smallest p is significant) are all
+    satisfied by q = p, so none of them would notice the correction being
+    dropped or swapped for Bonferroni.
+    """
+    tested = [
+        population
+        for population in compare(planted_difference, Cohort()).populations
+        if population.p_value is not None
+    ]
+    assert len(tested) == len(POPULATIONS)
+
+    expected = _benjamini_hochberg([p.p_value for p in tested if p.p_value])
+    for population, want in zip(tested, expected, strict=True):
+        assert population.q_value == pytest.approx(want)
+
+
+def test_statistics_are_reported_at_four_per_group(conn: sqlite3.Connection) -> None:
+    """Sizes are literal, not derived from MIN_GROUP_SIZE.
+
+    Deriving them would move the boundary with the constant, so the pair would
+    pass at any threshold and pin nothing.
+    """
+    create_schema(conn)
+    rows = _BASELINE[:4]
+    _seed_groups(conn, {"yes": rows, "no": list(rows)})
+    for population in compare(conn, Cohort()).populations:
+        assert population.p_value is not None
+
+
+def test_statistics_are_withheld_at_three_per_group(conn: sqlite3.Connection) -> None:
+    """Three per group cannot reach alpha even uncorrected, so nothing is reported."""
+    create_schema(conn)
+    rows = _BASELINE[:3]
+    _seed_groups(conn, {"yes": rows, "no": list(rows)})
+    for population in compare(conn, Cohort()).populations:
+        assert population.p_value is None
+
+
+def test_the_test_is_two_sided(conn: sqlite3.Connection) -> None:
+    """Mirroring which group is higher must not change the p-value.
+
+    A one-sided alternative would report a small p in one direction and close
+    to 1 in the other.
+    """
+
+    def b_cell_p(connection: sqlite3.Connection) -> float | None:
+        result = compare(connection, Cohort())
+        return next(p for p in result.populations if p.population == "b_cell").p_value
+
+    create_schema(conn)
+    _seed_groups(conn, {"yes": _BASELINE, "no": _B_CELL_SHIFTED})
+    forward = b_cell_p(conn)
+
+    mirrored = connect(":memory:")
+    try:
+        create_schema(mirrored)
+        _seed_groups(mirrored, {"yes": _B_CELL_SHIFTED, "no": _BASELINE})
+        backward = b_cell_p(mirrored)
+    finally:
+        mirrored.close()
+
+    assert forward == pytest.approx(backward)
+
+
+def test_a_population_missing_from_one_group_is_dropped_not_raised(
+    conn: sqlite3.Connection,
+) -> None:
+    """median() over an empty list raises StatisticsError, a ValueError subclass.
+
+    Letting that escape would make an internal gap indistinguishable from a
+    caller error once the API maps ValueError to a 4xx.
+    """
+    create_schema(conn)
+    _seed_groups(conn, {"yes": _BASELINE, "no": list(_BASELINE)})
+    # Remove nk_cell from every "no" sample.
+    conn.execute(
+        "DELETE FROM cell_counts WHERE population_id = "
+        "(SELECT population_id FROM populations WHERE name = 'nk_cell') "
+        "AND sample_id IN (SELECT sample_id FROM samples JOIN subjects "
+        "USING (subject_id) WHERE response = 'no')"
+    )
+    conn.commit()
+
+    result = compare(conn, Cohort())
+    reported = {p.population for p in result.populations}
+    assert "nk_cell" not in reported
+    assert reported == set(POPULATIONS) - {"nk_cell"}
 
 
 def test_rejects_an_unknown_split_column(no_difference: sqlite3.Connection) -> None:

@@ -3,8 +3,9 @@
 The spec fixes the output columns exactly: sample, total_count, population,
 count, percentage. One row per sample and population.
 
-The seeded fixture gives every sample a total of 200 cells, so expected
-percentages are just count / 2 and can be written down rather than recomputed.
+Fixture totals deliberately differ between samples (see `conftest.py`), so a
+view dividing every count by a shared constant, or by another sample's total,
+fails here rather than passing by coincidence.
 """
 
 from __future__ import annotations
@@ -132,8 +133,45 @@ def test_zero_total_sample_yields_a_number_not_null(
         assert row.percentage == 0.0
 
 
-def test_rows_are_ordered_deterministically(seeded_db: sqlite3.Connection) -> None:
-    first = summary_rows(seeded_db)
-    second = summary_rows(seeded_db)
-    assert first == second
-    assert [r.sample for r in first] == sorted(r.sample for r in first)
+def test_rows_are_sorted_regardless_of_insertion_order(
+    conn: sqlite3.Connection,
+) -> None:
+    """Samples are inserted in reverse, so a missing ORDER BY would show.
+
+    The main fixture inserts in sorted order, which SQLite happens to return in
+    rowid order, so it cannot detect the clause being dropped.
+    """
+    create_schema(conn)
+    with conn:
+        conn.executemany(
+            "INSERT INTO populations (population_id, name) VALUES (?, ?)",
+            list(enumerate(POPULATIONS, start=1)),
+        )
+        conn.execute("INSERT INTO projects (project_id) VALUES ('prj1')")
+        for sample in ("sZ", "sM", "sA"):  # deliberately not alphabetical
+            subject = f"sbj-{sample}"
+            conn.execute(
+                "INSERT INTO subjects "
+                "(subject_id, project_id, condition, age, sex, treatment, response) "
+                "VALUES (?, 'prj1', 'melanoma', 50, 'M', 'miraclib', 'yes')",
+                (subject,),
+            )
+            conn.execute(
+                "INSERT INTO samples (sample_id, subject_id, sample_type, "
+                "time_from_treatment_start) VALUES (?, ?, 'PBMC', 0)",
+                (sample, subject),
+            )
+            conn.executemany(
+                "INSERT INTO cell_counts (sample_id, population_id, count) "
+                "VALUES (?, ?, ?)",
+                [(sample, i + 1, 40) for i in range(len(POPULATIONS))],
+            )
+
+    rows = summary_rows(conn)
+    assert [r.sample for r in rows] == sorted(r.sample for r in rows)
+    per_sample = [r.population for r in rows if r.sample == "sA"]
+    assert per_sample == sorted(per_sample)
+
+
+def test_repeated_calls_return_the_same_rows(seeded_db: sqlite3.Connection) -> None:
+    assert summary_rows(seeded_db) == summary_rows(seeded_db)
